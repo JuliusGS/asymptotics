@@ -1,0 +1,22 @@
+# generated figure output (all figures are regenerable from scripts/)
+figures/*.svg
+figures/*.png
+figures/*.eps
+figures/*.pdf
+
+# logs & scratch
+*.log
+tmp_*
+octave-workspace
+
+# python
+__pycache__/
+*.pyc
+
+# LaTeX writeup aux (in case a writeup lands here)
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.xdv
+*.bcf
