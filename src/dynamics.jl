@@ -30,6 +30,26 @@ function maxey_riley!(dw, w, p::Params, t)
 end
 
 """
+    maxey_riley_DDt!(dw, w, p::Params, t)
+
+DiBenedetto's form of the decoupled Maxey–Riley system: identical to [`maxey_riley!`](@ref)
+except the added-mass term uses the **fluid** material derivative `Du/Dt` (following the
+fluid, Auton–Hunt–Prud'Homme 1988) rather than the particle-following `du/dt`. For the
+deep-water wave `Du₁/Dt = u₂` and `Du₂/Dt = -u₁ + ε e^{2z}` (the advection cancels in x
+and contributes an `ε e^{2z}` mean term in z). Use to test whether a drift feature is
+sensitive to the d/dt-vs-D/Dt modelling choice.
+"""
+function maxey_riley_DDt!(dw, w, p::Params, t)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    u1 = exp(w[2]) * cos(w[1] - t)
+    u2 = exp(w[2]) * sin(w[1] - t)
+    dw[1] = w[3]
+    dw[2] = w[4]
+    dw[3] = (eps*u1 - w[3])/St + b*eps*u2                          # + b ε Du₁/Dt
+    dw[4] = (eps*u2 - w[4])/St - vz/St + b*eps*(-u1 + eps*exp(2*w[2]))  # + b ε Du₂/Dt
+end
+
+"""
     fluid_settling!(dw, w, p::Params, t)
 
 Inertialess reference: the particle is a fluid element that also settles at `vz`.

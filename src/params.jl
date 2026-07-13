@@ -20,3 +20,12 @@ Base.@kwdef struct Params
     b::Float64
     vz::Float64
 end
+
+"""
+    update(p::Params; St=p.St, eps=p.eps, b=p.b, vz=p.vz) -> Params
+
+Copy-with-changes: return a NEW `Params` with the named fields replaced. `Params` is
+immutable by design (so a captured `p` can never change underneath a closure), which
+means `p.St = 0.1` is an error — write `p = update(p; St=0.1)` instead.
+"""
+update(p::Params; St=p.St, eps=p.eps, b=p.b, vz=p.vz) = Params(; St, eps, b, vz)

@@ -212,6 +212,186 @@ function st_accuracy_figure(; n_pts=10, St_lo=0.01, St_hi=1.0, tend=200.0, eps=0
     return Sts, e_slow, e_fluid
 end
 
+"""
+    final_advection_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=200, eps=0.33, b=0.5, vz=0.05,
+                                 outdir=DEFAULT_FIGDIR) -> (Sts, d)
+
+The slow-manifold model's final advection distance ([`final_advection_distance`](@ref))
+as a function of Stokes number, with `eps`, `b`, `vz` held fixed (St varied *only*). `St`
+is log-spaced over `[St_lo, St_hi]`. The dashed line is the `b = 1` inertialess baseline
+(`A = ε`), so the gap between the curves is the inertial correction at each St.
+"""
+function final_advection_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=200, eps=0.33, b=0.5, vz=0.05,
+                                      outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d      = [final_advection_distance(Params(St=St, eps=eps, b=b,   vz=vz)) for St in Sts]
+    d_iner = [final_advection_distance(Params(St=St, eps=eps, b=1.0, vz=vz)) for St in Sts]
+
+    plot(Sts, d; xscale=:log10, lw=2.5, color=:blue, label="b = $b",
+         xlabel=L"\mathrm{St}", ylabel="final advection distance",
+         title="ε=$eps, b=$b, vz=$vz", legend=:best)
+    plot!(Sts, d_iner; lw=2, ls=:dash, color=:black, label="b = 1 (inertialess)")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_vs_St_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return Sts, d
+end
+
+"""
+    final_advection_correction_order_figure(; St_lo=1e-3, St_hi=0.3, n=150,
+        eps=0.33, b=0.5, vz=0.05, full_mr=true, n_mr=14, outdir=DEFAULT_FIGDIR)
+
+Order-in-St diagnostic for the inertial correction `Δ(St) = |d(St; b) − d_fs|` of the
+final advection distance, where `d_fs` is the **St = 0 limit** — the fluid+settling
+distance ([`final_advection_distance_fs`](@ref)), a single common baseline for both
+curves (it coincides with the `b = 1` distance in both descriptions). Two curves, both in
+the decoupled (`vz`, `St` independent) convention:
+
+* **slow-manifold approximation** ([`final_advection_distance`](@ref)) — cheap, fine grid;
+* **full Maxey–Riley** ([`final_advection_distance_mr`](@ref)) — ODE solves, coarse grid
+  (`n_mr` points, `St ≥ 0.01`); set `full_mr=false` to skip.
+
+Log–log, with dashed guides `∝ St` and `∝ St²` anchored at the small-St end. Both curves
+track `∝ St` (the correction is O(St), carried by the O(St) phase lag), though their
+coefficients differ — the reduction gets the order right, not the coefficient.
+"""
+function final_advection_correction_order_figure(; St_lo=1e-3, St_hi=0.3, n=150,
+        eps=0.33, b=0.5, vz=0.05, full_mr=true, n_mr=14, outdir=DEFAULT_FIGDIR)
+    d_fs = final_advection_distance_fs(Params(St=1.0, eps=eps, b=b, vz=vz))  # St=0 limit (indep. of St,b)
+
+    # slow-manifold approximation (cheap: fine grid), vs the fluid+settling St=0 baseline
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    aΔ  = [abs(final_advection_distance(Params(St=St, eps=eps, b=b, vz=vz)) - d_fs) for St in Sts]
+
+    plt = plot(Sts, aΔ; xscale=:log10, yscale=:log10, lw=2.5, color=:blue,
+               label="slow-manifold approximation", xlabel=L"\mathrm{St}",
+               ylabel=L"|d(\mathrm{St};\,b) - d_{\mathrm{fs}}|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+
+    # full Maxey–Riley (expensive ODE solves: coarse grid, St ≥ 0.01), same baseline
+    Sts_mr = aΔ_mr = nothing
+    if full_mr
+        Sts_mr = 10 .^ range(log10(max(St_lo, 1e-2)), log10(St_hi), length=n_mr)
+        aΔ_mr  = [abs(final_advection_distance_mr(Params(St=St, eps=eps, b=b, vz=vz)) - d_fs) for St in Sts_mr]
+        plot!(plt, Sts_mr, aΔ_mr; seriestype=:scatter, marker=:circle, ms=5, color=:red,
+              label="full Maxey–Riley")
+    end
+
+    # slope guides anchored at the smallest-St approximation point
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_correction_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn)
+    return (; Sts, aΔ, Sts_mr, aΔ_mr)
+end
+
+"""
+    final_advection_avgstart_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=20,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, d_avg, d_inst)
+
+Full Maxey–Riley final advection distance vs St, measured from the **phase-averaged
+start** ([`period_averaged_start`](@ref) / [`final_advection_distance_mr_avgstart`](@ref))
+— i.e. averaging the position over the first oscillation period (delimited by negative→
+positive `vₓ` crossings). The dashed curve is the same distance measured from the
+instantaneous release point, for comparison. Particle released at fluid velocity.
+"""
+function final_advection_avgstart_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=20,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d_avg  = Float64[]
+    d_inst = Float64[]
+    for St in Sts
+        p = Params(St=St, eps=eps, b=b, vz=vz)
+        s = period_averaged_start(p)
+        sol = solve(ODEProblem(maxey_riley!, [0.0, 0.0, eps, 0.0], (0.0, 30/vz), p),
+                    abstol=1e-12, reltol=1e-10, save_everystep=false, maxiters=1e9)
+        xend = sol.u[end][1]
+        push!(d_avg,  xend - s.avgd_x0)
+        push!(d_inst, xend)                              # instantaneous start (x_release = 0)
+    end
+
+    plot(Sts, d_avg; xscale=:log10, lw=2.5, marker=:circle, ms=4, color=:blue,
+         label="from phase-averaged start", xlabel=L"\mathrm{St}",
+         ylabel="final advection distance", title="ε=$eps, b=$b, vz=$vz", legend=:best)
+    plot!(Sts, d_inst; lw=2, ls=:dash, marker=:diamond, ms=3, color=:red,
+          label="from instantaneous release")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_avgstart_vs_St_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return (; Sts, d_avg, d_inst)
+end
+
+"""
+    final_advection_avgstart_order_figure(; St_lo=1e-2, St_hi=0.3, n=16,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, aΔ)
+
+Log–log order-in-St diagnostic for the full-M–R final advection distance measured from
+the **phase-averaged start** ([`final_advection_distance_mr_avgstart`](@ref)), against its
+St = 0 limit ([`final_advection_distance_fs_avgstart`](@ref)). Guides `∝ St` and `∝ St²`.
+Tests whether averaging out the first-period oscillation removes the O(St) boundary term.
+"""
+function final_advection_avgstart_order_figure(; St_lo=1e-2, St_hi=0.3, n=16,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d0  = final_advection_distance_fs_avgstart(Params(St=0.1, eps=eps, b=b, vz=vz))  # St=0 limit
+    aΔ  = [abs(final_advection_distance_mr_avgstart(Params(St=St, eps=eps, b=b, vz=vz)) - d0) for St in Sts]
+
+    plt = plot(Sts, aΔ; xscale=:log10, yscale=:log10, seriestype=:scatter, marker=:circle,
+               ms=5, color=:blue, label="M–R, phase-averaged start", xlabel=L"\mathrm{St}",
+               ylabel=L"|d_{\mathrm{avg}}(\mathrm{St}) - d_{\mathrm{avg}}(0)|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_avgstart_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn, "   d0=", round(d0, digits=6))
+    return (; Sts, aΔ)
+end
+
+"""
+    final_advection_ddt_order_figure(; St_lo=1e-2, St_hi=0.3, n=14,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, aΔ_ddt, aΔ_DDt)
+
+Log–log order-in-St diagnostic of the final advection distance (phase-averaged start,
+[`final_advection_distance_mr_avgstart`](@ref)) for **both** the particle-following
+[`maxey_riley!`](@ref) and DiBenedetto's fluid-`Du/Dt` [`maxey_riley_DDt!`](@ref), against
+the shared fluid+settling St=0 baseline. Tests whether the O(St) correction is sensitive
+to the added-mass derivative choice (it is not — both track `∝ St`).
+"""
+function final_advection_ddt_order_figure(; St_lo=1e-2, St_hi=0.3, n=14,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d0  = final_advection_distance_fs_avgstart(Params(St=0.1, eps=eps, b=b, vz=vz))
+    aΔ_ddt = [abs(final_advection_distance_mr_avgstart(Params(St=St,eps=eps,b=b,vz=vz);
+                  dynamics=maxey_riley!)    - d0) for St in Sts]
+    aΔ_DDt = [abs(final_advection_distance_mr_avgstart(Params(St=St,eps=eps,b=b,vz=vz);
+                  dynamics=maxey_riley_DDt!) - d0) for St in Sts]
+
+    plt = plot(Sts, aΔ_ddt; xscale=:log10, yscale=:log10, seriestype=:scatter, marker=:circle,
+               ms=5, color=:blue, label="M–R, du/dt (particle)", xlabel=L"\mathrm{St}",
+               ylabel=L"|d_{\mathrm{avg}}(\mathrm{St}) - d_{\mathrm{avg}}(0)|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+    plot!(plt, Sts, aΔ_DDt; seriestype=:scatter, marker=:diamond, ms=5, color=:red,
+          label="M–R, Du/Dt (fluid, DiBenedetto)")
+    plot!(plt, Sts, aΔ_ddt[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ_ddt[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_ddt_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn)
+    return (; Sts, aΔ_ddt, aΔ_DDt)
+end
+
 # Canonical parameter sets that reproduce the paper figures. This is the single record of
 # "which p makes which figure" (it used to live one-per-file in scripts/).
 """
@@ -231,6 +411,8 @@ function make_all_figures(; outdir=DEFAULT_FIGDIR, include_st_sweep=true)
     xz_contours(pc; outdir)
     sigma_omega_contours(pc; outdir)
     sigma_omega_recovery_figure(pc; outdir)
+    final_advection_vs_st_figure(; outdir)
+    final_advection_correction_order_figure(; outdir, full_mr=include_st_sweep)
     include_st_sweep && st_accuracy_figure(; outdir)
     return nothing
 end

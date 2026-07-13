@@ -123,6 +123,15 @@ eigendata(p)        # (; lambda1, lambda3, vhat, M)
 xdot(p)(0.0, 0.0)   # wave-frame dX/dt at (X,z)=(0,0)
 ```
 
+### I. Final advection distance (model prediction, no time stepping)
+```julia
+final_advection_distance(p)                  # ∫(1 + 1/f) dX along the isobar, X→−∞
+final_advection_distance(p; X0=0.0, z0=0.0)  # release point (defaults to the origin)
+```
+The `b = 1` value is the inertialess (`A = ε`) prediction; `b ≠ 1` differs by the
+inertial correction. Agrees with the `recover_xzt` reconstruction and a direct
+`slow_manifold_xz!` solve to ~1e-10.
+
 ---
 
 ## 3. Add a new figure
@@ -157,6 +166,9 @@ you), SVG into `figures/` (git-ignored — figures are always regenerable).
 - **`vz`, not `St·θ`.** `p.vz` is the terminal settling velocity directly. If you have an
   old `θ`, pass `vz = St*θ`. (This is what the coupled-physics figures use, `θ = 1-b`,
   i.e. `vz = St*(1-b)`.)
+- **`Params` is immutable:** `p.St = 0.1` errors (that's deliberate — a captured `p` can
+  never change underneath a closure). Make a changed copy with `p = update(p; St=0.1)`,
+  or just build a fresh `Params(...)`.
 - **`b = 1` is the tracer limit:** `amplitude` stays finite (`A = ε`) but `eigendata`/
   `projection` are singular there — expected.
 - **OOM guard:** always solve with `dense=false` and `saveat=...` when you only need the

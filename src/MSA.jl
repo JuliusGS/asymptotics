@@ -34,14 +34,16 @@ include("paths.jl")
 include("figures.jl")
 
 # --- public API ---
-export Params
+export Params, update
 # dynamics (det-functions for ODEProblem)
-export maxey_riley!, fluid_settling!, sigma_omega!, slow_manifold_xz!
+export maxey_riley!, maxey_riley_DDt!, fluid_settling!, sigma_omega!, slow_manifold_xz!
 # Hamiltonian / slow manifold
 export amplitude, hamiltonian, xdot, eigendata,
        hamiltonian_B3, projection, ham_trafo
 # lab-frame reconstruction from an isobar
-export recover_xzt
+export recover_xzt, final_advection_distance, final_advection_distance_mr,
+       final_advection_distance_fs, period_averaged_start,
+       final_advection_distance_mr_avgstart, final_advection_distance_fs_avgstart
 # solver utilities
 export ode_path_gen, path_distance_var,
        sigma_omega_ic, sigma_omega_solution, collapse_sigma_omega,
@@ -49,6 +51,8 @@ export ode_path_gen, path_distance_var,
 # figure-makers
 export mr_fs_isobar_figure, compare_full_fs_ham, b3_contours, xz_contours,
        sigma_omega_contours, sigma_omega_recovery_figure, st_accuracy_figure,
-       make_all_figures, figure_suffix
+       final_advection_vs_st_figure, final_advection_correction_order_figure,
+       final_advection_avgstart_vs_st_figure, final_advection_avgstart_order_figure,
+       final_advection_ddt_order_figure, make_all_figures, figure_suffix
 
 end # module
