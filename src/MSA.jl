@@ -36,7 +36,8 @@ include("figures.jl")
 # --- public API ---
 export Params, update
 # dynamics (det-functions for ODEProblem)
-export maxey_riley!, maxey_riley_DDt!, fluid_settling!, sigma_omega!, slow_manifold_xz!
+export maxey_riley!, maxey_riley_DDt!, fluid_settling!, sigma_omega!, slow_manifold_xz!,
+       wave_averaged_drift!
 # Hamiltonian / slow manifold
 export amplitude, hamiltonian, xdot, eigendata,
        hamiltonian_B3, projection, ham_trafo
@@ -53,6 +54,7 @@ export mr_fs_isobar_figure, compare_full_fs_ham, b3_contours, xz_contours,
        sigma_omega_contours, sigma_omega_recovery_figure, st_accuracy_figure,
        final_advection_vs_st_figure, final_advection_correction_order_figure,
        final_advection_avgstart_vs_st_figure, final_advection_avgstart_order_figure,
-       final_advection_ddt_order_figure, make_all_figures, figure_suffix
+       final_advection_ddt_order_figure, make_figures_comp_final_dist,
+       make_all_figures, figure_suffix
 
 end # module

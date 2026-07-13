@@ -392,6 +392,81 @@ function final_advection_ddt_order_figure(; St_lo=1e-2, St_hi=0.3, n=14,
     return (; Sts, aΔ_ddt, aΔ_DDt)
 end
 
+"""
+    make_figures_comp_final_dist(p::Params; St_lo=0.01, St_hi=1.0, n=15,
+                                 include_rest=true, outdir=DEFAULT_FIGDIR)
+        -> (; Sts, d_fs, d_mr, d_rest, d_ham, d_froz, d_coup)
+
+Compare the final advection distance across five descriptions, sweeping St (log-spaced,
+`p.St` ignored; `eps, b, vz` from `p`), infinite depth:
+
+1. `d_mr`   — full Maxey–Riley released ON the collapsed slow manifold at (0,0)
+             (`v = [Re A, Im A - vz]`) → `final_advection_distance_mr`.
+2. `d_rest` — full Maxey–Riley released at `(vx,vz) = (0,0)` (from rest) at (0,0).
+             Included only when `include_rest=true` (otherwise `NaN`, not plotted).
+3. `d_ham`  — Hamiltonian (isobar) asymptotics from (0,0) → `final_advection_distance`.
+4. `d_froz` — wave-averaged, drift integrated along the frozen leading path
+             `z_* = z0 - vz t` (closed form), started at the M–R first-period average
+             `(avgd_x0, avgd_z0)`.
+5. `d_coup` — wave-averaged, coupled `(ẋ,ż)` integrated with `ode_path_gen`
+             ([`wave_averaged_drift!`](@ref)), started at the same average.
+
+The wave-averaged distances are `x_end` (they keep the `avgd_x0` offset). Two figures:
+plot 1 = each minus the common fluid+settling St=0 baseline; plot 2 = the others minus
+the on-slow-manifold full Maxey–Riley.
+"""
+function make_figures_comp_final_dist(p::Params; St_lo=0.01, St_hi=1.0, n=15,
+                                      include_rest::Bool=true, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    bp  = 1 - p.b
+    d_fs = final_advection_distance_fs(p)         # common St=0 baseline (fluid+settling, from origin)
+
+    d_mr = similar(Sts); d_ham = similar(Sts); d_froz = similar(Sts); d_coup = similar(Sts)
+    d_rest = fill(NaN, length(Sts))               # optional: full M–R released from rest at (0,0)
+    for (i, St) in enumerate(Sts)
+        q = Params(St=St, eps=p.eps, b=p.b, vz=p.vz)
+        A = amplitude(q)
+        d_mr[i]  = final_advection_distance_mr(q)                     # full M–R, on-manifold at (0,0)
+        if include_rest
+            sol_r = solve(ODEProblem(maxey_riley!, [0.0,0.0,0.0,0.0], (0.0, 30/q.vz), q),
+                          abstol=1e-11, reltol=1e-10, save_everystep=false, maxiters=1e9)
+            d_rest[i] = sol_r.u[end][1]                              # full M–R from rest at (0,0)
+        end
+        d_ham[i] = final_advection_distance(q)                        # Hamiltonian isobar from (0,0)
+        s = period_averaged_start(q; u0=[0.0, 0.0, real(A), imag(A) - q.vz])   # M–R first-period average
+        C = 1 - bp*St^2 + 2*bp*St*q.vz - q.vz^2
+        d_froz[i] = s.avgd_x0 + q.eps^2*exp(2*s.avgd_z0)/(2*q.vz)*C   # frozen z_*, from average
+        sol = ode_path_gen(wave_averaged_drift!, [s.avgd_x0, s.avgd_z0], (0.0, 20/q.vz), q; dtmax=0.1)
+        d_coup[i] = sol.u[end][1]                                     # coupled, from average
+    end
+
+    ttl = "ε=$(p.eps), b=$(p.b), vz=$(p.vz)"
+    restlab = "full Maxey–Riley released at (vx,vz)=(0,0)"
+    # Plot 1: difference from the common fluid+settling baseline
+    plt1 = plot(Sts, d_mr .- d_fs; xscale=:log10, lw=2, marker=:square, ms=4, color=:red,
+                label="full Maxey–Riley released on slow manifold", xlabel=L"\mathrm{St}",
+                ylabel=L"d(\mathrm{St}) - d_{\mathrm{fluid+settling}}", title=ttl, legend=:bottomleft)
+    include_rest && plot!(plt1, Sts, d_rest .- d_fs; lw=2, marker=:hexagon, ms=4, color=:purple, label=restlab)
+    plot!(plt1, Sts, d_ham  .- d_fs; lw=2, marker=:circle,    ms=4, color=:blue,     label="Hamiltonian asymptotics")
+    plot!(plt1, Sts, d_froz .- d_fs; lw=2, marker=:utriangle, ms=4, color=:orange,   label="wave-avg, frozen z_*")
+    plot!(plt1, Sts, d_coup .- d_fs; lw=2, marker=:diamond,   ms=4, color=:seagreen, label="wave-avg, coupled")
+    mkpath(outdir)
+    fn1 = joinpath(outdir, "final_dist_comp_vs_fluidsettling_eps$(p.eps)_b$(p.b)_vz$(round(p.vz, digits=4)).svg")
+    savefig(plt1, fn1); println("saved ", fn1)
+
+    # Plot 2: the others minus the full Maxey–Riley released on the slow manifold
+    plt2 = plot(Sts, d_ham .- d_mr; xscale=:log10, lw=2, marker=:circle, ms=4, color=:blue,
+                label="Hamiltonian asymptotics", xlabel=L"\mathrm{St}",
+                ylabel=L"d(\mathrm{St}) - d_{\mathrm{M\!-\!R\ (slow\ manifold)}}", title=ttl, legend=:bottomleft)
+    include_rest && plot!(plt2, Sts, d_rest .- d_mr; lw=2, marker=:hexagon, ms=4, color=:purple, label=restlab)
+    plot!(plt2, Sts, d_froz .- d_mr; lw=2, marker=:utriangle, ms=4, color=:orange,   label="wave-avg, frozen z_*")
+    plot!(plt2, Sts, d_coup .- d_mr; lw=2, marker=:diamond,   ms=4, color=:seagreen, label="wave-avg, coupled")
+    fn2 = joinpath(outdir, "final_dist_comp_vs_maxeyriley_eps$(p.eps)_b$(p.b)_vz$(round(p.vz, digits=4)).svg")
+    savefig(plt2, fn2); println("saved ", fn2)
+
+    return (; Sts, d_fs, d_mr, d_rest, d_ham, d_froz, d_coup)
+end
+
 # Canonical parameter sets that reproduce the paper figures. This is the single record of
 # "which p makes which figure" (it used to live one-per-file in scripts/).
 """

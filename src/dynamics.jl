@@ -97,3 +97,23 @@ function slow_manifold_xz!(dw, w, p::Params, t)
     dw[1] = real(d)
     dw[2] = imag(d)
 end
+
+"""
+    wave_averaged_drift!(dw, w, p::Params, t)
+
+Wave-averaged (Stokes-drift) equations for the settling particle in infinite depth
+(the deep-water limit of the notebook asymptotics), state `w = [x, z]`, `b' = 1-b`:
+
+    ẋ = ε² e^{2z} (1 - b'St² + 2 b'St·vz - vz²)
+    ż = -vz - ε² e^{2z} (b'St + vz)
+
+Integrating these self-consistently (z evolving) is the coupled asymptotic path. Holding
+`z` at the leading path `z_* = z0 - vz t` instead makes `ẋ(t)` explicit and integrates to
+the closed form `ε² e^{2 z0}/(2 vz) · (bracket)`.
+"""
+function wave_averaged_drift!(dw, w, p::Params, t)
+    eps = p.eps; vz = p.vz; St = p.St; bp = 1 - p.b
+    e2z = eps^2 * exp(2*w[2])
+    dw[1] = e2z * (1 - bp*St^2 + 2*bp*St*vz - vz^2)
+    dw[2] = -vz - e2z * (bp*St + vz)
+end
