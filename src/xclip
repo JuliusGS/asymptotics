@@ -1,0 +1,1161 @@
+# Deterministic right-hand sides ("det-functions") for `ODEProblem`.
+#
+# All are in the v_z convention (see `Params`): the settling velocity is `p.vz`, and
+# the Maxey–Riley gravity term is `-vz/St`, so the particle settles at exactly `vz`
+# in still fluid, independent of St.
+#
+# These are vendored copies of the functions actually used from the 2026.03 codebase,
+# with the convention standardised to v_z:
+#   * maxey_riley!    == santamaria_full_eq_added_mass_new_dudt_material_settling_am_separate!
+#   * fluid_settling! == particle_is_fluid_and_settling_inf_sep_settling_ad!  (the `-vz` form)
+# so the fragile external include chain (classes.jl -> ODEs_new.jl -> plot_asymptotics.jl)
+# is dropped entirely.
+
+"""
+    maxey_riley!(dw, w, p::Params, t)
+
+Full decoupled Maxey–Riley system with settling and added mass separated.
+State `w = [x, z, vx, vz]`; the fluid velocity is the deep-water wave
+`u = eᶻ (cos(x-t), sin(x-t))`. Gravity enters as `-vz/St` (v_z convention), so the
+terminal settling velocity in still fluid is exactly `p.vz`.
+"""
+function maxey_riley!(dw, w, p::Params, t)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    u1 = exp(w[2]) * cos(w[1] - t)
+    u2 = exp(w[2]) * sin(w[1] - t)
+    dw[1] = w[3]
+    dw[2] = w[4]
+    dw[3] = (eps*u1 - w[3])/St + b*eps*(u2 - w[3]*u2 + w[4]*u1)
+    dw[4] = (eps*u2 - w[4])/St - vz/St + b*eps*(-u1 + w[3]*u1 + w[4]*u2)
+end
+
+"""
+    maxey_riley_DDt!(dw, w, p::Params, t)
+
+DiBenedetto's form of the decoupled Maxey–Riley system: identical to [`maxey_riley!`](@ref)
+except the added-mass term uses the **fluid** material derivative `Du/Dt` (following the
+fluid, Auton–Hunt–Prud'Homme 1988) rather than the particle-following `du/dt`. For the
+deep-water wave `Du₁/Dt = u₂` and `Du₂/Dt = -u₁ + ε e^{2z}` (the advection cancels in x
+and contributes an `ε e^{2z}` mean term in z). Use to test whether a drift feature is
+sensitive to the d/dt-vs-D/Dt modelling choice.
+"""
+function maxey_riley_DDt!(dw, w, p::Params, t)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    u1 = exp(w[2]) * cos(w[1] - t)
+    u2 = exp(w[2]) * sin(w[1] - t)
+    dw[1] = w[3]
+    dw[2] = w[4]
+    dw[3] = (eps*u1 - w[3])/St + b*eps*u2                          # + b ε Du₁/Dt
+    dw[4] = (eps*u2 - w[4])/St - vz/St + b*eps*(-u1 + eps*exp(2*w[2]))  # + b ε Du₂/Dt
+end
+
+"""
+    fluid_settling!(dw, w, p::Params, t)
+
+Inertialess reference: the particle is a fluid element that also settles at `vz`.
+State `w = [x, z]`. The Stokes drift emerges from advection (it is NOT prescribed).
+This is the `St → 0` (tracer + settling) limit of [`maxey_riley!`](@ref).
+"""
+function fluid_settling!(dw, w, p::Params, t)
+    eps = p.eps; vz = p.vz
+    dw[1] = eps*exp(w[2]) * cos(w[1] - t)
+    dw[2] = eps*exp(w[2]) * sin(w[1] - t) - vz
+end
+
+"""
+    sigma_omega!(dw, w, p::Params, t)
+
+The reduced `(σ, ω)` system, complex, in the state `w = [σ, σ̄, ω, ω̄]`. Obtained from
+the Maxey–Riley equations by the change of variables `σ = eᶻ⁻ⁱ⁽ˣ⁻ᵗ⁾`,
+`ω = (vx-1) - b ε eᶻcos(X) + i(vz - b ε eᶻsin(X))`.
+
+v_z convention: the old `θ` (with terminal velocity `St*θ`) is `θ = vz/St` here, so the
+constant forcing `-1/St ∓ iθ` becomes `-1/St ∓ i vz/St`.
+"""
+function sigma_omega!(dw, w, p::Params, t)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    g = vz / St                       # = old θ (terminal velocity is St*θ = vz)
+    dw[1] = -im*w[1]*w[3] - im*b*eps*w[1]*w[2]
+    dw[2] =  im*w[2]*w[4] + im*b*eps*w[2]*w[1]
+    dw[3] = (eps*(1-b)*w[2] - w[3])/St - 1/St - im*g
+    dw[4] = (eps*(1-b)*w[1] - w[4])/St - 1/St + im*g
+end
+
+"""
+    slow_manifold_xz!(dw, w, p::Params, t)
+
+The slow manifold (`B₁ = B₂ = 0`) written directly as a 2-D `(x, z)` flow. On the
+manifold `ω` is slaved to `B₃ = e^{z+iX}/conj(vhat)` (with `X = x - t`), giving
+`d(x+iz)/dt = B₃ - i vz + b ε e^{z+iX}`. Provably identical to the
+Hphys / z(X) / t(X) isobar reconstruction in [`recover_xzt`](@ref).
+"""
+function slow_manifold_xz!(dw, w, p::Params, t)
+    vh = eigendata(p).vhat
+    X  = w[1] - t
+    B3 = exp(w[2] + im*X) / conj(vh)
+    d  = B3 - im*p.vz + p.b*p.eps*exp(w[2] + im*X)   # dx/dt + i dz/dt
+    dw[1] = real(d)
+    dw[2] = imag(d)
+end
+
+"""
+    wave_averaged_drift!(dw, w, p::Params, t)
+
+Wave-averaged (Stokes-drift) equations for the settling particle in infinite depth
+(the deep-water limit of the notebook asymptotics), state `w = [x, z]`, `b' = 1-b`:
+
+    ẋ = ε² e^{2z} (1 - b'St² + 2 b'St·vz - vz²)
+    ż = -vz - ε² e^{2z} (b'St + vz)
+
+Integrating these self-consistently (z evolving) is the coupled asymptotic path. Holding
+`z` at the leading path `z_* = z0 - vz t` instead makes `ẋ(t)` explicit and integrates to
+the closed form `ε² e^{2 z0}/(2 vz) · (bracket)`.
+"""
+function wave_averaged_drift!(dw, w, p::Params, t)
+    eps = p.eps; vz = p.vz; St = p.St; bp = 1 - p.b
+    e2z = eps^2 * exp(2*w[2])
+    dw[1] = e2z * (1 - bp*St^2 + 2*bp*St*vz - vz^2)
+    dw[2] = -vz - e2z * (bp*St + vz)
+end
+# Figure-makers: one function per figure, all exported and callable directly after
+# `using MSA` alone. These call `savefig`/`mkpath` (side effects when CALLED), but define
+# nothing that runs when the module LOADS — that's the only "no side effects" rule.
+
+"Filename suffix `St..._eps..._b..._vz...` encoding all run parameters."
+figure_suffix(p::Params) = "St$(p.St)_eps$(p.eps)_b$(p.b)_vz$(round(p.vz, digits=4))"
+
+const DEFAULT_FIGDIR = joinpath(@__DIR__, "..", "figures")
+
+"""
+    mr_fs_isobar_figure(p::Params; N=3000, tend=5/p.vz, prefix="mr_fs_isobar", outdir=...)
+
+Lab-frame trajectory comparison in the decoupled setting, all released from
+`(x,z) = (0,0)`: the isobar of the slow-manifold Hamiltonian, full Maxey-Riley from
+rest, full Maxey-Riley from fluid velocity, and fluid+settling. Saves an SVG into
+`outdir` named with all of `p`'s parameters.
+"""
+function mr_fs_isobar_figure(p::Params; N=3000, tend=nothing, prefix="mr_fs_isobar",
+                             outdir=DEFAULT_FIGDIR)
+    T = tend === nothing ? 5/p.vz : tend
+
+    sol4(u0) = solve(ODEProblem(maxey_riley!, u0, (0.0, T), p),
+                     abstol=1e-9, reltol=1e-9, saveat=0.05, dense=false, maxiters=1e8)
+    mr_rest  = sol4([0.0, 0.0, 0.0, 0.0])       # M-R from rest
+    mr_fluid = sol4([0.0, 0.0, p.eps, 0.0])     # M-R at fluid velocity (ε u at the origin)
+    fs = solve(ODEProblem(fluid_settling!, [0.0, 0.0], (0.0, T), p),
+               abstol=1e-9, reltol=1e-9, saveat=0.05, dense=false)
+
+    rec = recover_xzt(p; X0=0.0, z0=0.0, Xspan=T, N=N)   # isobar -> (x, z)
+
+    plt = plot(rec.x, rec.z, label="isobar (simplified Hamiltonian)", lw=2.5, color=:blue,
+               xlabel="x", ylabel="z", size=(1000, 650), legend=:bottomright)
+    plot!(plt, [u[1] for u in mr_rest.u],  [u[2] for u in mr_rest.u],
+          label="M-R (from rest)", lw=2, color=:red)
+    plot!(plt, [u[1] for u in mr_fluid.u], [u[2] for u in mr_fluid.u],
+          label="M-R (from fluid velocity)", lw=2, color=:seagreen)
+    plot!(plt, [u[1] for u in fs.u], [u[2] for u in fs.u],
+          label="fluid + settling", lw=2, ls=:dash, color=:purple)
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "$(prefix)_$(figure_suffix(p)).svg")
+    savefig(plt, fn)
+    println("saved ", fn, "   A = ", round(amplitude(p), digits=5))
+    return plt
+end
+
+"""
+    compare_full_fs_ham(p::Params; X0=0.0, z0=0.0, N=5000, outdir=...)
+
+Full Maxey-Riley (released ON the slow manifold) vs. the isobar reconstruction and
+fluid+settling. All three use a single, consistent `vz`, so isobar and full M-R agree
+to solver tolerance (unlike the old `code/fixed_xzt.jl`, which mixed conventions).
+"""
+function compare_full_fs_ham(p::Params; X0=0.0, z0=0.0, N=5000, outdir=DEFAULT_FIGDIR)
+    A = amplitude(p)
+    T = 5/p.vz
+
+    # full Maxey-Riley, released exactly on the slow manifold: v = A·E - i·vz at (X0,z0)
+    E0 = exp(z0 + im*X0)
+    u0 = [X0, z0, real(A*E0), imag(A*E0) - p.vz]
+    mr = solve(ODEProblem(maxey_riley!, u0, (0.0, T), p),
+               abstol=1e-10, reltol=1e-10, dtmax=0.01, maxiters=1e9)
+
+    fs = solve(ODEProblem(fluid_settling!, [X0, z0], (0.0, T), p),
+               abstol=1e-10, reltol=1e-10, dtmax=0.01)
+
+    rec = recover_xzt(p; X0=X0, z0=z0, Xspan=T, N=N)
+
+    plt = plot(rec.x, rec.z, label="isobar reconstruction", lw=2, color=:blue,
+               xlabel=L"x", ylabel=L"z", size=(1000, 640),
+               title="St=$(p.St), b=$(p.b), vz=$(p.vz)")
+    plot!(plt, [mr(s)[1] for s in mr.t], [mr(s)[2] for s in mr.t],
+          label="Maxey-Riley (released on manifold)", lw=3, color=:orange, alpha=0.6)
+    plot!(plt, [fs(s)[1] for s in fs.t], [fs(s)[2] for s in fs.t],
+          label="fluid + settling", lw=2, ls=:dash, color=:purple)
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "compare_full_fs_ham_$(figure_suffix(p)).svg")
+    savefig(plt, fn)
+    println("endpoints:  isobar x=$(round(rec.x[end],digits=4)) z=$(round(rec.z[end],digits=3)) | ",
+            "MR x=$(round(mr(T)[1],digits=4)) z=$(round(mr(T)[2],digits=3)) | ",
+            "fs x=$(round(fs(T)[1],digits=4)) z=$(round(fs(T)[2],digits=3))")
+    println("saved ", fn)
+    return plt
+end
+
+"""
+    b3_contours(p::Params; n=100, outdir=...)
+
+`H̄(B₃)` over the complex `B₃`-plane — Cartesian and polar grids, real and imaginary
+parts (4 SVGs).
+"""
+function b3_contours(p::Params; n=100, outdir=DEFAULT_FIGDIR)
+    Hbar = hamiltonian_B3(p)
+    mkpath(outdir)
+    x = range(-10, 10, length=n); y = range(-10, 10, length=n)
+    for (part, f) in (("real", real), ("imag", imag))
+        Z = @. f(Hbar(x' + im*y))
+        contour(x, y, Z, fill=true, xlabel=L"\Re(B_3)", ylabel=L"\Im(B_3)",
+                colorbar_title=part == "real" ? L"\Re(H)" : L"\Im(H)")
+        savefig(joinpath(outdir, "contour_of_$(part)_hamiltonian_$(figure_suffix(p)).svg"))
+    end
+    r = range(0, 10, length=n); ang = range(-pi, pi, length=n)
+    for (part, f) in (("real", real), ("imag", imag))
+        Z = @. f(Hbar(r' * exp(im*ang)))
+        contour(r, ang, Z, fill=true, xlabel=L"r(B_3)", ylabel=L"\arg(B_3)",
+                colorbar_title=part == "real" ? L"\Re(H)" : L"\Im(H)")
+        savefig(joinpath(outdir, "polar_contour_of_$(part)_hamiltonian_$(figure_suffix(p)).svg"))
+    end
+end
+
+"""
+    xz_contours(p::Params; xlim=(0,20pi), zlim=(-5,2), n=500, outdir=...)
+
+`H(X, z)` in wave-frame coordinates; its level curves are the isobars.
+"""
+function xz_contours(p::Params; xlim=(0, 20pi), zlim=(-5, 2), n=500, outdir=DEFAULT_FIGDIR)
+    H = hamiltonian(p)
+    X = range(xlim[1], xlim[2], length=n); z = range(zlim[1], zlim[2], length=n)
+    Hgrid = [H(x, zz) for zz in z, x in X]
+    contour(X, z, Hgrid, fill=true, levels=30, xlabel=L"X = x-t", ylabel=L"z",
+            colorbar_title=L"H(X,z)")
+    mkpath(outdir)
+    savefig(joinpath(outdir, "hamiltonian_XZ_$(figure_suffix(p)).svg"))
+end
+
+"""
+    sigma_omega_contours(p::Params; lim=500.0, n=100, outdir=...)
+
+`H(σ, ω)` via the collapse-onto-slow-eigenspace map (2 SVGs).
+"""
+function sigma_omega_contours(p::Params; lim=500.0, n=100, outdir=DEFAULT_FIGDIR)
+    Ht = ham_trafo(p)
+    mkpath(outdir)
+    s = range(-lim, lim, length=n); o = range(-lim, lim, length=n)
+    for (part, f) in (("real", real), ("imag", imag))
+        Z = @. f(Ht(s', o))
+        contour(s, o, Z, fill=true, xlabel=L"\sigma", ylabel=L"\omega",
+                colorbar_title=part == "real" ? L"\Re(H)" : L"\Im(H)")
+        savefig(joinpath(outdir, "sigma_omega_contour_of_$(part)_hamiltonian_$(figure_suffix(p)).svg"))
+    end
+end
+
+"""
+    sigma_omega_recovery_figure(p::Params; u0=[0,0,0.33,0], tspan=(0,200), outdir=...)
+
+Recover the lab-frame trajectory from the reduced `(σ, ω)` system, and overlay the
+recovery after collapsing `(σ, ω)` onto the 2-D slow eigenspace — the two should barely
+differ (`B₁, B₂ ≈ 0`).
+"""
+function sigma_omega_recovery_figure(p::Params; u0=[0.0, 0.0, 0.33, 0.0], tspan=(0.0, 200.0),
+                                     outdir=DEFAULT_FIGDIR)
+    so = sigma_omega_solution(p, u0, tspan)
+    full = recover_xz_from_sigma_omega(p, so.sigma, so.omega, u0[1:2], tspan)
+
+    sig_s, om_s = collapse_sigma_omega(p, so.sigma, so.omega)
+    simpl = recover_xz_from_sigma_omega(p, sig_s, om_s, u0[1:2], tspan)
+
+    plt = plot([full(t)[1] for t in full.t], [full(t)[2] for t in full.t],
+               label="full (σ,ω) solution", lw=2, xlabel=L"x", ylabel=L"z", size=(1000, 640),
+               title="St=$(p.St), b=$(p.b), vz=$(round(p.vz,digits=4))")
+    plot!(plt, [simpl(t)[1] for t in simpl.t], [simpl(t)[2] for t in simpl.t],
+          label="recovered after 2-D eigenspace projection", lw=2, ls=:dash)
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "sigma_omega_recovery_$(figure_suffix(p)).svg")
+    savefig(plt, fn)
+    ts = range(tspan[1], min(last(full.t), last(simpl.t)), length=500)
+    dmax = maximum(hypot(full(t)[1]-simpl(t)[1], full(t)[2]-simpl(t)[2]) for t in ts)
+    println("max |full − projected| over path = ", dmax)
+    println("saved ", fn)
+    return plt
+end
+
+"""
+    st_accuracy_figure(; n_pts=10, St_lo=0.01, St_hi=1.0, tend=200.0, eps=0.33, b=0.9, outdir=...)
+
+Accuracy vs `St`: grade the slow-manifold approximation and the fluid+settling
+reference against full Maxey-Riley with the double-averaging metric
+([`path_distance_var`](@ref)). `θ = 1-b` held fixed, so `vz = St(1-b)` scales with `St`.
+"""
+function st_accuracy_figure(; n_pts=10, St_lo=0.01, St_hi=1.0, tend=200.0, eps=0.33, b=0.9,
+                            outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n_pts)
+    e_slow  = fill(NaN, n_pts)
+    e_fluid = fill(NaN, n_pts)
+    u0_full = [0.0, 0.0, 0.33, 0.0]      # release at fluid velocity
+    for (i, Sti) in enumerate(Sts)
+        p = Params(St=Sti, eps=eps, b=b, vz=Sti*(1 - b))
+        tspan = (0.0, tend)
+        try
+            e_slow[i]  = path_distance_var(p, maxey_riley!, u0_full, slow_manifold_xz!, [0.0, 0.0], tspan)
+        catch err
+            println("  slow  St=$(round(Sti,digits=4)) failed: $err")
+        end
+        try
+            e_fluid[i] = path_distance_var(p, maxey_riley!, u0_full, fluid_settling!, [0.0, 0.0], tspan)
+        catch err
+            println("  fluid St=$(round(Sti,digits=4)) failed: $err")
+        end
+        println("St=$(round(Sti,digits=4))   slow=$(e_slow[i])   fluid=$(e_fluid[i])")
+    end
+
+    plot(Sts, e_slow; xscale=:log10, yscale=:log10, marker=:circle, lw=2,
+         label="slow manifold (B₁,₂=0)", xlabel=L"\mathrm{St}",
+         ylabel="rel. double-avg error", legend=:topleft)
+    plot!(Sts, e_fluid; marker=:diamond, lw=2, ls=:dash, label="fluid + settling")
+    mkpath(outdir)
+    fn = joinpath(outdir, "st_accuracy_comparison_eps$(eps)_b$(b).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return Sts, e_slow, e_fluid
+end
+
+"""
+    final_advection_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=200, eps=0.33, b=0.5, vz=0.05,
+                                 outdir=DEFAULT_FIGDIR) -> (Sts, d)
+
+The slow-manifold model's final advection distance ([`final_advection_distance`](@ref))
+as a function of Stokes number, with `eps`, `b`, `vz` held fixed (St varied *only*). `St`
+is log-spaced over `[St_lo, St_hi]`. The dashed line is the `b = 1` inertialess baseline
+(`A = ε`), so the gap between the curves is the inertial correction at each St.
+"""
+function final_advection_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=200, eps=0.33, b=0.5, vz=0.05,
+                                      outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d      = [final_advection_distance(Params(St=St, eps=eps, b=b,   vz=vz)) for St in Sts]
+    d_iner = [final_advection_distance(Params(St=St, eps=eps, b=1.0, vz=vz)) for St in Sts]
+
+    plot(Sts, d; xscale=:log10, lw=2.5, color=:blue, label="b = $b",
+         xlabel=L"\mathrm{St}", ylabel="final advection distance",
+         title="ε=$eps, b=$b, vz=$vz", legend=:best)
+    plot!(Sts, d_iner; lw=2, ls=:dash, color=:black, label="b = 1 (inertialess)")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_vs_St_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return Sts, d
+end
+
+"""
+    final_advection_correction_order_figure(; St_lo=1e-3, St_hi=0.3, n=150,
+        eps=0.33, b=0.5, vz=0.05, full_mr=true, n_mr=14, outdir=DEFAULT_FIGDIR)
+
+Order-in-St diagnostic for the inertial correction `Δ(St) = |d(St; b) − d_fs|` of the
+final advection distance, where `d_fs` is the **St = 0 limit** — the fluid+settling
+distance ([`final_advection_distance_fs`](@ref)), a single common baseline for both
+curves (it coincides with the `b = 1` distance in both descriptions). Two curves, both in
+the decoupled (`vz`, `St` independent) convention:
+
+* **slow-manifold approximation** ([`final_advection_distance`](@ref)) — cheap, fine grid;
+* **full Maxey–Riley** ([`final_advection_distance_mr`](@ref)) — ODE solves, coarse grid
+  (`n_mr` points, `St ≥ 0.01`); set `full_mr=false` to skip.
+
+Log–log, with dashed guides `∝ St` and `∝ St²` anchored at the small-St end. Both curves
+track `∝ St` (the correction is O(St), carried by the O(St) phase lag), though their
+coefficients differ — the reduction gets the order right, not the coefficient.
+"""
+function final_advection_correction_order_figure(; St_lo=1e-3, St_hi=0.3, n=150,
+        eps=0.33, b=0.5, vz=0.05, full_mr=true, n_mr=14, outdir=DEFAULT_FIGDIR)
+    d_fs = final_advection_distance_fs(Params(St=1.0, eps=eps, b=b, vz=vz))  # St=0 limit (indep. of St,b)
+
+    # slow-manifold approximation (cheap: fine grid), vs the fluid+settling St=0 baseline
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    aΔ  = [abs(final_advection_distance(Params(St=St, eps=eps, b=b, vz=vz)) - d_fs) for St in Sts]
+
+    plt = plot(Sts, aΔ; xscale=:log10, yscale=:log10, lw=2.5, color=:blue,
+               label="slow-manifold approximation", xlabel=L"\mathrm{St}",
+               ylabel=L"|d(\mathrm{St};\,b) - d_{\mathrm{fs}}|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+
+    # full Maxey–Riley (expensive ODE solves: coarse grid, St ≥ 0.01), same baseline
+    Sts_mr = aΔ_mr = nothing
+    if full_mr
+        Sts_mr = 10 .^ range(log10(max(St_lo, 1e-2)), log10(St_hi), length=n_mr)
+        aΔ_mr  = [abs(final_advection_distance_mr(Params(St=St, eps=eps, b=b, vz=vz)) - d_fs) for St in Sts_mr]
+        plot!(plt, Sts_mr, aΔ_mr; seriestype=:scatter, marker=:circle, ms=5, color=:red,
+              label="full Maxey–Riley")
+    end
+
+    # slope guides anchored at the smallest-St approximation point
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_correction_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn)
+    return (; Sts, aΔ, Sts_mr, aΔ_mr)
+end
+
+"""
+    final_advection_avgstart_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=20,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, d_avg, d_inst)
+
+Full Maxey–Riley final advection distance vs St, measured from the **phase-averaged
+start** ([`period_averaged_start`](@ref) / [`final_advection_distance_mr_avgstart`](@ref))
+— i.e. averaging the position over the first oscillation period (delimited by negative→
+positive `vₓ` crossings). The dashed curve is the same distance measured from the
+instantaneous release point, for comparison. Particle released at fluid velocity.
+"""
+function final_advection_avgstart_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=20,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d_avg  = Float64[]
+    d_inst = Float64[]
+    for St in Sts
+        p = Params(St=St, eps=eps, b=b, vz=vz)
+        s = period_averaged_start(p)
+        sol = solve(ODEProblem(maxey_riley!, [0.0, 0.0, eps, 0.0], (0.0, 30/vz), p),
+                    abstol=1e-12, reltol=1e-10, save_everystep=false, maxiters=1e9)
+        xend = sol.u[end][1]
+        push!(d_avg,  xend - s.avgd_x0)
+        push!(d_inst, xend)                              # instantaneous start (x_release = 0)
+    end
+
+    plot(Sts, d_avg; xscale=:log10, lw=2.5, marker=:circle, ms=4, color=:blue,
+         label="from phase-averaged start", xlabel=L"\mathrm{St}",
+         ylabel="final advection distance", title="ε=$eps, b=$b, vz=$vz", legend=:best)
+    plot!(Sts, d_inst; lw=2, ls=:dash, marker=:diamond, ms=3, color=:red,
+          label="from instantaneous release")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_avgstart_vs_St_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return (; Sts, d_avg, d_inst)
+end
+
+"""
+    final_advection_avgstart_order_figure(; St_lo=1e-2, St_hi=0.3, n=16,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, aΔ)
+
+Log–log order-in-St diagnostic for the full-M–R final advection distance measured from
+the **phase-averaged start** ([`final_advection_distance_mr_avgstart`](@ref)), against its
+St = 0 limit ([`final_advection_distance_fs_avgstart`](@ref)). Guides `∝ St` and `∝ St²`.
+Tests whether averaging out the first-period oscillation removes the O(St) boundary term.
+"""
+function final_advection_avgstart_order_figure(; St_lo=1e-2, St_hi=0.3, n=16,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d0  = final_advection_distance_fs_avgstart(Params(St=0.1, eps=eps, b=b, vz=vz))  # St=0 limit
+    aΔ  = [abs(final_advection_distance_mr_avgstart(Params(St=St, eps=eps, b=b, vz=vz)) - d0) for St in Sts]
+
+    plt = plot(Sts, aΔ; xscale=:log10, yscale=:log10, seriestype=:scatter, marker=:circle,
+               ms=5, color=:blue, label="M–R, phase-averaged start", xlabel=L"\mathrm{St}",
+               ylabel=L"|d_{\mathrm{avg}}(\mathrm{St}) - d_{\mathrm{avg}}(0)|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_avgstart_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn, "   d0=", round(d0, digits=6))
+    return (; Sts, aΔ)
+end
+
+"""
+    final_advection_ddt_order_figure(; St_lo=1e-2, St_hi=0.3, n=14,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR) -> (; Sts, aΔ_ddt, aΔ_DDt)
+
+Log–log order-in-St diagnostic of the final advection distance (phase-averaged start,
+[`final_advection_distance_mr_avgstart`](@ref)) for **both** the particle-following
+[`maxey_riley!`](@ref) and DiBenedetto's fluid-`Du/Dt` [`maxey_riley_DDt!`](@ref), against
+the shared fluid+settling St=0 baseline. Tests whether the O(St) correction is sensitive
+to the added-mass derivative choice (it is not — both track `∝ St`).
+"""
+function final_advection_ddt_order_figure(; St_lo=1e-2, St_hi=0.3, n=14,
+        eps=0.33, b=0.5, vz=0.05, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    d0  = final_advection_distance_fs_avgstart(Params(St=0.1, eps=eps, b=b, vz=vz))
+    aΔ_ddt = [abs(final_advection_distance_mr_avgstart(Params(St=St,eps=eps,b=b,vz=vz);
+                  dynamics=maxey_riley!)    - d0) for St in Sts]
+    aΔ_DDt = [abs(final_advection_distance_mr_avgstart(Params(St=St,eps=eps,b=b,vz=vz);
+                  dynamics=maxey_riley_DDt!) - d0) for St in Sts]
+
+    plt = plot(Sts, aΔ_ddt; xscale=:log10, yscale=:log10, seriestype=:scatter, marker=:circle,
+               ms=5, color=:blue, label="M–R, du/dt (particle)", xlabel=L"\mathrm{St}",
+               ylabel=L"|d_{\mathrm{avg}}(\mathrm{St}) - d_{\mathrm{avg}}(0)|",
+               title="ε=$eps, b=$b, vz=$vz", legend=:bottomright)
+    plot!(plt, Sts, aΔ_DDt; seriestype=:scatter, marker=:diamond, ms=5, color=:red,
+          label="M–R, Du/Dt (fluid, DiBenedetto)")
+    plot!(plt, Sts, aΔ_ddt[1] .* (Sts ./ Sts[1]);    ls=:dash, color=:gray,  label=L"\propto \mathrm{St}")
+    plot!(plt, Sts, aΔ_ddt[1] .* (Sts ./ Sts[1]).^2; ls=:dot,  color=:black, label=L"\propto \mathrm{St}^2")
+
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_ddt_order_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(plt, fn)
+    println("saved ", fn)
+    return (; Sts, aΔ_ddt, aΔ_DDt)
+end
+
+"""
+    make_figures_comp_final_dist(p::Params; St_lo=0.01, St_hi=1.0, n=15,
+                                 include_rest=true, outdir=DEFAULT_FIGDIR)
+        -> (; Sts, d_fs, d_mr, d_rest, d_ham, d_froz, d_coup)
+
+Compare the final advection distance across five descriptions, sweeping St (log-spaced,
+`p.St` ignored; `eps, b, vz` from `p`), infinite depth:
+
+1. `d_mr`   — full Maxey–Riley released ON the collapsed slow manifold at (0,0)
+             (`v = [Re A, Im A - vz]`) → `final_advection_distance_mr`.
+2. `d_rest` — full Maxey–Riley released at `(vx,vz) = (0,0)` (from rest) at (0,0).
+             Included only when `include_rest=true` (otherwise `NaN`, not plotted).
+3. `d_ham`  — Hamiltonian (isobar) asymptotics from (0,0) → `final_advection_distance`.
+4. `d_froz` — wave-averaged, drift integrated along the frozen leading path
+             `z_* = z0 - vz t` (closed form), started at the M–R first-period average
+             `(avgd_x0, avgd_z0)`.
+5. `d_coup` — wave-averaged, coupled `(ẋ,ż)` integrated with `ode_path_gen`
+             ([`wave_averaged_drift!`](@ref)), started at the same average.
+
+The wave-averaged distances are `x_end` (they keep the `avgd_x0` offset). Two figures:
+plot 1 = each minus the common fluid+settling St=0 baseline; plot 2 = the others minus
+the on-slow-manifold full Maxey–Riley.
+"""
+function make_figures_comp_final_dist(p::Params; St_lo=0.01, St_hi=1.0, n=15,
+                                      include_rest::Bool=true, outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    bp  = 1 - p.b
+    d_fs = final_advection_distance_fs(p)         # common St=0 baseline (fluid+settling, from origin)
+
+    d_mr = similar(Sts); d_ham = similar(Sts); d_froz = similar(Sts); d_coup = similar(Sts)
+    d_rest = fill(NaN, length(Sts))               # optional: full M–R released from rest at (0,0)
+    for (i, St) in enumerate(Sts)
+        q = Params(St=St, eps=p.eps, b=p.b, vz=p.vz)
+        A = amplitude(q)
+        d_mr[i]  = final_advection_distance_mr(q)                     # full M–R, on-manifold at (0,0)
+        if include_rest
+            sol_r = solve(ODEProblem(maxey_riley!, [0.0,0.0,0.0,0.0], (0.0, 30/q.vz), q),
+                          abstol=1e-11, reltol=1e-10, save_everystep=false, maxiters=1e9)
+            d_rest[i] = sol_r.u[end][1]                              # full M–R from rest at (0,0)
+        end
+        d_ham[i] = final_advection_distance(q)                        # Hamiltonian isobar from (0,0)
+        s = period_averaged_start(q; u0=[0.0, 0.0, real(A), imag(A) - q.vz])   # M–R first-period average
+        C = 1 - bp*St^2 + 2*bp*St*q.vz - q.vz^2
+        d_froz[i] = s.avgd_x0 + q.eps^2*exp(2*s.avgd_z0)/(2*q.vz)*C   # frozen z_*, from average
+        sol = ode_path_gen(wave_averaged_drift!, [s.avgd_x0, s.avgd_z0], (0.0, 20/q.vz), q; dtmax=0.1)
+        d_coup[i] = sol.u[end][1]                                     # coupled, from average
+    end
+
+    ttl = "ε=$(p.eps), b=$(p.b), vz=$(p.vz)"
+    restlab = "full Maxey–Riley released at (vx,vz)=(0,0)"
+    # Plot 1: difference from the common fluid+settling baseline
+    plt1 = plot(Sts, d_mr .- d_fs; xscale=:log10, lw=2, marker=:square, ms=4, color=:red,
+                label="full Maxey–Riley released on slow manifold", xlabel=L"\mathrm{St}",
+                ylabel=L"d(\mathrm{St}) - d_{\mathrm{fluid+settling}}", title=ttl, legend=:bottomleft)
+    include_rest && plot!(plt1, Sts, d_rest .- d_fs; lw=2, marker=:hexagon, ms=4, color=:purple, label=restlab)
+    plot!(plt1, Sts, d_ham  .- d_fs; lw=2, marker=:circle,    ms=4, color=:blue,     label="Hamiltonian asymptotics")
+    plot!(plt1, Sts, d_froz .- d_fs; lw=2, marker=:utriangle, ms=4, color=:orange,   label="wave-avg, frozen z_*")
+    plot!(plt1, Sts, d_coup .- d_fs; lw=2, marker=:diamond,   ms=4, color=:seagreen, label="wave-avg, coupled")
+    mkpath(outdir)
+    fn1 = joinpath(outdir, "final_dist_comp_vs_fluidsettling_eps$(p.eps)_b$(p.b)_vz$(round(p.vz, digits=4)).svg")
+    savefig(plt1, fn1); println("saved ", fn1)
+
+    # Plot 2: the others minus the full Maxey–Riley released on the slow manifold
+    plt2 = plot(Sts, d_ham .- d_mr; xscale=:log10, lw=2, marker=:circle, ms=4, color=:blue,
+                label="Hamiltonian asymptotics", xlabel=L"\mathrm{St}",
+                ylabel=L"d(\mathrm{St}) - d_{\mathrm{M\!-\!R\ (slow\ manifold)}}", title=ttl, legend=:bottomleft)
+    include_rest && plot!(plt2, Sts, d_rest .- d_mr; lw=2, marker=:hexagon, ms=4, color=:purple, label=restlab)
+    plot!(plt2, Sts, d_froz .- d_mr; lw=2, marker=:utriangle, ms=4, color=:orange,   label="wave-avg, frozen z_*")
+    plot!(plt2, Sts, d_coup .- d_mr; lw=2, marker=:diamond,   ms=4, color=:seagreen, label="wave-avg, coupled")
+    fn2 = joinpath(outdir, "final_dist_comp_vs_maxeyriley_eps$(p.eps)_b$(p.b)_vz$(round(p.vz, digits=4)).svg")
+    savefig(plt2, fn2); println("saved ", fn2)
+
+    return (; Sts, d_fs, d_mr, d_rest, d_ham, d_froz, d_coup)
+end
+
+# Canonical parameter sets that reproduce the paper figures. This is the single record of
+# "which p makes which figure" (it used to live one-per-file in scripts/).
+"""
+    make_all_figures(; outdir=DEFAULT_FIGDIR, include_st_sweep=true)
+
+Regenerate every figure with its canonical parameter set — one call rebuilds `figures/`.
+`include_st_sweep=false` skips the slow `st_accuracy_figure` sweep.
+
+From the shell: `julia --project=. -e 'using MSA; make_all_figures()'`.
+"""
+function make_all_figures(; outdir=DEFAULT_FIGDIR, include_st_sweep=true)
+    mr_fs_isobar_figure(Params(St=0.5, eps=0.33, b=0.5, vz=0.05); outdir)
+    compare_full_fs_ham(Params(St=0.5, eps=0.33, b=0.9, vz=0.05); outdir)
+    # coupled-physics set (θ = 1-b, so vz = St(1-b)) for the Hamiltonian / σ-ω figures
+    pc = Params(St=0.8, eps=0.33, b=0.9, vz=0.8*(1 - 0.9))
+    b3_contours(pc; outdir)
+    xz_contours(pc; outdir)
+    sigma_omega_contours(pc; outdir)
+    sigma_omega_recovery_figure(pc; outdir)
+    final_advection_vs_st_figure(; outdir)
+    final_advection_correction_order_figure(; outdir, full_mr=include_st_sweep)
+    include_st_sweep && st_accuracy_figure(; outdir)
+    return nothing
+end
+# Slow-manifold amplitude, Hamiltonian, and linear (eigen) data — all pure functions
+# of `p::Params`, in the v_z convention. The old `θ` (terminal velocity `St*θ`) maps to
+# `θ = vz/St` here, so every `St*θ` becomes `vz` and every `St²*θ` becomes `St*vz`.
+
+"""
+    eigendata(p::Params) -> (; lambda1, lambda3, vhat, M)
+
+Linear data of the reduced `(σ, ω)` system about its fixed point:
+* `lambda1 = -1/St`                                   — fast eigenvalue
+* `lambda3 = -vz - im`                                — slow eigenvalue (`= -St*θ - i`)
+* `M       = (1 - i St - St*vz)/(ε (1-b))`            — appears in `A` and the Hamiltonian
+* `vhat    = conj(M) = (St²θ - i St - 1)/(ε (b-1))`   — spans the slow eigenspace
+
+Singular at `b = 1` (the tracer limit), where the slow eigenspace degenerates but the
+response amplitude [`amplitude`](@ref) stays finite (`A = ε`).
+"""
+function eigendata(p::Params)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    lambda1 = -1/St
+    lambda3 = -vz - im
+    M    = (1 - im*St - St*vz) / (eps*(1 - b))
+    vhat = conj(M)
+    return (; lambda1, lambda3, vhat, M)
+end
+
+"""
+    amplitude(p::Params) -> ComplexF64
+
+Complex response amplitude `A` of the particle on the slow manifold:
+`A = b ε + (1-b) ε / (1 - i St - vz St)`  (so `A = ε` exactly when `b = 1`).
+"""
+function amplitude(p::Params)
+    St = p.St; eps = p.eps; b = p.b; vz = p.vz
+    return b*eps + (1 - b)*eps / (1 - im*St - vz*St)
+end
+
+"""
+    hamiltonian(p::Params) -> Function
+
+Generating Hamiltonian (stream function) of the slow-manifold flow in wave-frame
+coordinates `(X, z)`, `X = x - t`:
+`H(X, z) = -z + vz X + eᶻ Re(A e^{iX})`,  `A = amplitude(p)`.
+Its level curves are the isobars. Returns the closure `H(X, z)`.
+"""
+function hamiltonian(p::Params)
+    A = amplitude(p); vz = p.vz
+    return (X, z) -> -z + vz*X + exp(z)*real(A*exp(im*X))
+end
+
+"""
+    xdot(p::Params) -> Function
+
+Wave-frame velocity `dX/dt = -1 + eᶻ Re(A e^{iX})` on the slow manifold.
+Returns the closure `Xdot(X, z)`.
+"""
+function xdot(p::Params)
+    A = amplitude(p)
+    return (X, z) -> -1 + exp(z)*real(A*exp(im*X))
+end
+
+"""
+    hamiltonian_B3(p::Params) -> Function
+
+The reduced Hamiltonian in the slow-eigenspace coordinate `B₃` (before unwrapping to
+`(X, z)`):
+`H̄(B₃) = -i λ₃ log(B̄₃) + (1 + b ε M̄) B̄₃ + i λ̄₃ log(B₃) + (1 + b ε M) B₃`.
+Multivalued through `log`; becomes single-valued once written in `(X, z)`
+(see [`hamiltonian`](@ref)). Returns the closure `Hbar(B3)`.
+"""
+function hamiltonian_B3(p::Params)
+    ed = eigendata(p); b = p.b; eps = p.eps
+    l3 = ed.lambda3; M = ed.M
+    return B3 -> -im*l3*log(conj(B3)) + (1 + b*eps*conj(M))*conj(B3) +
+                  im*conj(l3)*log(B3) + (1 + b*eps*M)*B3
+end
+
+"""
+    projection(p::Params) -> Matrix{ComplexF64}
+
+Orthogonal projector (4×4) onto the slow eigenspace `span(v₃, v₄)` of the reduced
+`(σ, ω)` system, used to collapse a full `(σ, ω)` state onto the slow manifold.
+"""
+function projection(p::Params)
+    vh = eigendata(p).vhat
+    A = ComplexF64[0 vh; conj(vh) 0; 1 0; 0 1]
+    return A * (transpose(A)*A)^(-1) * transpose(A)
+end
+
+"""
+    ham_trafo(p::Params) -> Function
+
+Evaluate the reduced Hamiltonian at a full `(σ, ω)` state: collapse `(σ, ω)` onto the
+slow eigenspace (subtract the fixed point, project, add it back), decompose into `B₃`,
+and return `H̄(B₃)`. Returns the closure `(sigma, omega) -> H`.
+"""
+function ham_trafo(p::Params)
+    vh = eigendata(p).vhat; vz = p.vz
+    P = projection(p)
+    Hbar = hamiltonian_B3(p)
+    fp = ComplexF64[0, 0, -1 - im*vz, -1 + im*vz]
+    A = ComplexF64[0 vh; conj(vh) 0; 1 0; 0 1]
+    Apinv = pinv(A)
+    return function (sigma, omega)
+        collapsed = P*(ComplexF64[sigma, conj(sigma), omega, conj(omega)] - fp) + fp
+        s_s = collapsed[1]; o_s = collapsed[3]
+        B = Apinv * (ComplexF64[s_s, conj(s_s), o_s, conj(o_s)] - fp)
+        return Hbar(B[1])
+    end
+end
+"""
+    MSA
+
+Multiple-scales / slow-manifold analysis of a settling, added-mass particle in a
+deep-water surface wave (the decoupled Maxey–Riley problem).
+
+All quantities are in the **`v_z` convention**: `Params.vz` is the terminal settling
+velocity directly (not `St*θ`); the Maxey–Riley gravity term is `-vz/St`.
+
+Every function takes a `Params` explicitly — there are no module-level globals, and
+nothing in `src/` has side effects merely from `using MSA` (figure-makers in
+`figures.jl` produce output only when CALLED).
+
+`using MSA` alone re-exports the solver/plotting verbs you need (`solve`, `ODEProblem`,
+`plot`, `contour`, `savefig`, `find_zero`, `quadgk`, the `L"..."` macro, ...) — no need
+to separately `using DifferentialEquations, Plots`.
+"""
+module MSA
+
+using Reexport
+@reexport using DifferentialEquations
+@reexport using Roots
+@reexport using QuadGK
+@reexport using Plots
+@reexport using LaTeXStrings
+using LinearAlgebra
+using Statistics
+
+include("params.jl")
+include("dynamics.jl")
+include("hamiltonian.jl")
+include("recover.jl")
+include("paths.jl")
+include("figures.jl")
+
+# --- public API ---
+export Params, update
+# dynamics (det-functions for ODEProblem)
+export maxey_riley!, maxey_riley_DDt!, fluid_settling!, sigma_omega!, slow_manifold_xz!,
+       wave_averaged_drift!
+# Hamiltonian / slow manifold
+export amplitude, hamiltonian, xdot, eigendata,
+       hamiltonian_B3, projection, ham_trafo
+# lab-frame reconstruction from an isobar
+export recover_xzt, final_advection_distance, final_advection_distance_mr,
+       final_advection_distance_fs, period_averaged_start,
+       final_advection_distance_mr_avgstart, final_advection_distance_fs_avgstart
+# solver utilities
+export ode_path_gen, path_distance_var,
+       sigma_omega_ic, sigma_omega_solution, collapse_sigma_omega,
+       recover_xz_from_sigma_omega
+# figure-makers
+export mr_fs_isobar_figure, compare_full_fs_ham, b3_contours, xz_contours,
+       sigma_omega_contours, sigma_omega_recovery_figure, st_accuracy_figure,
+       final_advection_vs_st_figure, final_advection_correction_order_figure,
+       final_advection_avgstart_vs_st_figure, final_advection_avgstart_order_figure,
+       final_advection_ddt_order_figure, make_figures_comp_final_dist,
+       make_all_figures, figure_suffix
+
+end # module
+"""
+    Params(; St, eps, b, vz)
+
+Physics parameters for the decoupled Maxey–Riley / MSA problem, in the **`v_z`
+convention**: `vz` is the terminal settling velocity directly (NOT `St*θ`). The
+Maxey–Riley gravity term is `-vz/St`, so a particle settles at exactly `vz` in still
+fluid, independent of `St`.
+
+Immutable and physics-only. Integration details (initial condition, `tspan`, which
+det-function, callbacks) are passed explicitly to the solver helpers, never stored here.
+
+* `St`  — Stokes number
+* `eps` — wave slope ε (steepness `a*k`)
+* `b`   — added-mass coefficient (`b = 1` ⇒ neutrally buoyant, response amplitude `A = ε`)
+* `vz`  — terminal settling velocity
+"""
+Base.@kwdef struct Params
+    St::Float64
+    eps::Float64
+    b::Float64
+    vz::Float64
+end
+
+"""
+    update(p::Params; St=p.St, eps=p.eps, b=p.b, vz=p.vz) -> Params
+
+Copy-with-changes: return a NEW `Params` with the named fields replaced. `Params` is
+immutable by design (so a captured `p` can never change underneath a closure), which
+means `p.St = 0.1` is an error — write `p = update(p; St=0.1)` instead.
+"""
+update(p::Params; St=p.St, eps=p.eps, b=p.b, vz=p.vz) = Params(; St, eps, b, vz)
+# Solver utilities vendored from the 2026.03 `plot_asymptotics.jl`, adapted so the
+# integration details (det-function, initial condition, tspan, callbacks) are explicit
+# arguments instead of fields read off a mutable params struct.
+
+"""
+    ode_path_gen(det_function, u0, tspan, p::Params;
+                 K=Inf, callback_bottom="none", callback_top="none",
+                 dtmax=0.005, maxiters=1e9) -> ODESolution
+
+Solve `ODEProblem(det_function, u0, tspan, p)` with optional finite-depth (`K`)
+boundary callbacks. For the decoupled deep-water case use the defaults (`K = Inf`, no
+callbacks). The free-surface "pushdown" top callbacks of the original are omitted (they
+are unused in the decoupled setting).
+"""
+function ode_path_gen(det_function, u0, tspan, p::Params;
+                      K=Inf, callback_bottom="none", callback_top="none",
+                      dtmax=0.005, maxiters=1e9)
+    condition_fd(u, t, integrator) = u[2] + K
+    condition_top(u, t, integrator) = u[2]
+    function push_up_2d!(integrator)
+        integrator.u[2] = -K + 0.1
+        integrator.u[4] = -integrator.u[4]
+    end
+
+    if callback_bottom == "pure absorption"
+        bottom = ContinuousCallback(condition_fd, terminate!, save_positions=(true, false))
+    elseif callback_bottom == "no-flux"
+        bottom = ContinuousCallback(condition_fd, push_up_2d!, save_positions=(true, false))
+    elseif callback_bottom == "none"
+        bottom = nothing
+    else
+        error("Unknown callback_bottom: $callback_bottom")
+    end
+
+    if callback_top == "absorption"
+        top = ContinuousCallback(condition_top, terminate!, save_positions=(true, false))
+    elseif callback_top == "none"
+        top = nothing
+    else
+        error("Unknown callback_top: $callback_top")
+    end
+
+    prob = ODEProblem(det_function, u0, tspan, p)
+    return solve(prob, callback=CallbackSet(bottom, top), dtmax=dtmax, maxiters=maxiters)
+end
+
+"""
+    path_distance_var(p::Params, det_full, u0_full, det_approx, u0_approx, tspan;
+                      da_length=1.5, ga_param=3) -> Float64
+
+Double-averaged, `FAD²`-normalised relative error between a full trajectory
+(`det_full`) and an approximation (`det_approx`), both solved with [`ode_path_gen`](@ref).
+This is the paper's grading metric; only the double-average branch is vendored (the
+original's `make_plots=false, do_gaussian=false` path), so none of the presentation
+globals of `plot_asymptotics.jl` are needed. `FAD` is the full path's advection distance.
+"""
+function path_distance_var(p::Params, det_full, u0_full, det_approx, u0_approx, tspan;
+                           da_length=1.5, ga_param=3)
+    path  = ode_path_gen(det_full,   u0_full,   tspan, p)
+    asymp = ode_path_gen(det_approx, u0_approx, tspan, p)
+
+    # nearest time at which the wave-frame position x-t has advanced by one period (2π)
+    make_np(pat) = function (t)
+        f(tau) = pat(t)[1] - t - (pat(tau)[1] - tau) - 2pi
+        for k in 1:10
+            a, b = t + k*pi, t + (k+1)*pi
+            f(a)*f(b) < 0 && return find_zero(f, (a, b))
+        end
+        error("No sign change for t=$t within 10pi")
+    end
+    np_path  = make_np(path)
+    np_asymp = make_np(asymp)
+
+    function lag_avg(pat, np_fn, t)
+        (t < 0 || t > last(pat.t) - 10pi) && return [NaN, NaN]
+        [mean(pat(tau)[1] for tau in t:0.1:np_fn(t)),
+         mean(pat(tau)[2] for tau in t:0.1:np_fn(t))]
+    end
+    function double_avg(pat, np_fn, t)
+        (t < da_length/2 || t > last(pat.t) - 10pi - da_length/2) && return [NaN, NaN]
+        [mean(lag_avg(pat, np_fn, tau)[1] for tau in (t-da_length/2):0.1:(t+da_length/2)),
+         mean(lag_avg(pat, np_fn, tau)[2] for tau in (t-da_length/2):0.1:(t+da_length/2))]
+    end
+
+    tmax = min(last(path.t), last(asymp.t)) - 10pi - da_length/2 - 0.1
+    tl   = range(da_length/2 + 0.1, tmax, 50)
+    FAD  = sqrt((path(last(path.t))[1] - path(0)[1])^2 +
+                (path(last(path.t))[2] - path(0)[2])^2)
+    err = mean((double_avg(asymp, np_asymp, t)[1] - double_avg(path, np_path, t)[1])^2 +
+               (double_avg(asymp, np_asymp, t)[2] - double_avg(path, np_path, t)[2])^2
+               for t in tl) / FAD^2
+    isnan(err) && error("Double-average error is NaN (integration window too short)")
+    return err
+end
+
+# --- (σ, ω) machinery: initial condition, solve, collapse, and lab-frame recovery ---
+
+"""
+    sigma_omega_ic(p::Params, u0) -> Vector{ComplexF64}
+
+Initial condition `[σ₀, σ̄₀, ω₀, ω̄₀]` for [`sigma_omega!`](@ref) from a lab-frame
+state `u0 = [x, z, vx, vz]`.
+"""
+function sigma_omega_ic(p::Params, u0)
+    eps = p.eps; b = p.b
+    s0 = exp(u0[2] - im*u0[1])
+    o0 = (u0[3] - 1 - b*eps*exp(u0[2])*cos(u0[1])) +
+         im*(u0[4] - b*eps*exp(u0[2])*sin(u0[1]))
+    return ComplexF64[s0, conj(s0), o0, conj(o0)]
+end
+
+"""
+    sigma_omega_solution(p::Params, u0, tspan; solve_kwargs...) -> (; sol, sigma, omega)
+
+Solve the reduced `(σ, ω)` system from lab-frame IC `u0` over `tspan`. Returns the
+`ODESolution` plus scalar interpolants `sigma(t) = sol(t)[1]`, `omega(t) = sol(t)[3]`.
+"""
+function sigma_omega_solution(p::Params, u0, tspan; solve_kwargs...)
+    prob = ODEProblem(sigma_omega!, sigma_omega_ic(p, u0), tspan, p; maxiters=1e9)
+    sol  = solve(prob; solve_kwargs...)
+    return (; sol, sigma = t -> sol(t)[1], omega = t -> sol(t)[3])
+end
+
+"""
+    collapse_sigma_omega(p::Params, sigma, omega) -> (sigma_simpl, omega_simpl)
+
+Project the time-dependent `(σ, ω)` interpolants onto the slow eigenspace (subtract the
+fixed point, apply [`projection`](@ref), add it back). Returns closures of `t`.
+"""
+function collapse_sigma_omega(p::Params, sigma, omega)
+    P = projection(p); vz = p.vz
+    fp = ComplexF64[0, 0, -1 - im*vz, -1 + im*vz]
+    simpl(t) = P*(ComplexF64[sigma(t), conj(sigma(t)), omega(t), conj(omega(t))] - fp) + fp
+    return (t -> simpl(t)[1], t -> simpl(t)[3])
+end
+
+"""
+    recover_xz_from_sigma_omega(p::Params, sigma, omega, u0_xz, tspan; solve_kwargs...)
+        -> ODESolution
+
+Integrate the lab-frame flow `d(x+iz)/dt = 1 + ω(t) + b ε conj(σ(t))` driven by the
+given `(σ, ω)` interpolants (passed by closure — no globals). `u0_xz = [x0, z0]`.
+"""
+function recover_xz_from_sigma_omega(p::Params, sigma, omega, u0_xz, tspan; solve_kwargs...)
+    b = p.b; eps = p.eps
+    function det!(dw, w, _p, t)
+        v = 1 + omega(t) + b*eps*conj(sigma(t))
+        dw[1] = real(v)
+        dw[2] = imag(v)
+    end
+    return solve(ODEProblem(det!, u0_xz, tspan, p; maxiters=1e9); solve_kwargs...)
+end
+# Lab-frame trajectory reconstruction from a single isobar — no particle ODE solved.
+
+"""
+    recover_xzt(p::Params; X0=0.0, z0=0.0, Xspan=5/p.vz, N=4000) -> (; x, z, t, X)
+
+Reconstruct a lab-frame trajectory `(x, z)` from the single isobar
+`H(X, z) = H(X0, z0)` through the release point, WITHOUT integrating the particle ODE:
+
+1. `z(X)` from the isobar (`find_zero`; `H` is monotone in `z`), warm-started along `X`;
+2. `t(X) = ∫ dX / Xdot(X, z(X))`   (`quadgk`, accumulated segment by segment);
+3. lab-frame position `x = X + t(X)`.
+
+`X` runs from `X0` down to `X0 - Xspan`. Returns named arrays `x, z, t, X`.
+"""
+function recover_xzt(p::Params; X0=0.0, z0=0.0, Xspan=5/p.vz, N=4000)
+    H = hamiltonian(p); Xd = xdot(p)
+    c = H(X0, z0)
+    zprev = Ref(z0)
+    zof(X) = (zprev[] = find_zero(zz -> H(X, zz) - c, zprev[]); zprev[])
+
+    X = range(X0, X0 - Xspan, length=N)
+    z = zof.(X)
+    t = zeros(N)
+    for k in 2:N
+        t[k] = t[k-1] + quadgk(Xp -> 1/Xd(Xp, zof(Xp)), X[k-1], X[k])[1]
+    end
+    x = X .+ t
+    return (; x = collect(x), z = collect(z), t = t, X = collect(X))
+end
+
+"""
+    final_advection_distance(p::Params; X0=0.0, z0=0.0, atol=1e-12, rtol=1e-8) -> Float64
+
+Total horizontal advection distance the slow-manifold model predicts for a particle
+released at `(x, z) = (X0, z0)` (with `t = 0`, so the wave-frame coordinate is `X0 = x0`):
+
+    d_fin = ∫ (1 + 1/f(X')) dX'   from X0 toward X → −∞,
+
+where `f(X) = xdot(p)(X, z(X)) = -1 + eᶻ Re(A e^{iX})` is the wave-frame slow-manifold
+velocity along the isobar `z(X)` through the release point (`c = H(X0, z0)`,
+`A = amplitude(p)`). Since `f < 0` (the particle settles, `Ẋ < 0`), `X` decreases from
+`X0`; the integrand decays like `e^{vz·X}` as `z → −∞`, so the distance is finite.
+
+`z(X)` is the isobar `H(X,z) = c`, obtained by root finding — the same curve as the
+closed form `z(X) = vz·X − c − W₀(−Re(A e^{iX}) e^{vz·X − c})`. Released from rest at the
+origin (`X0 = z0 = 0`) gives `c = Re(A)`.
+
+For `b = 1` the amplitude collapses to `A = ε` (the inertialess `G`), so the distance
+matches the inertialess prediction; for `b ≠ 1` it differs — that difference is the
+inertial correction the model captures.
+"""
+function final_advection_distance(p::Params; X0=0.0, z0=0.0, atol=1e-12, rtol=1e-8)
+    vz = p.vz
+    vz > 0 || throw(ArgumentError("final_advection_distance needs vz > 0 (a settling particle)"))
+    A = amplitude(p)
+    H = hamiltonian(p); Xd = xdot(p)
+    c = H(X0, z0)
+
+    # isobar z(X): H(X,·)=c. Monotone in z on the settling branch, and the closed form
+    # z = vz*X - c - W₀(…) with W₀ ≥ -1 pins z ∈ [vz*X-c-2, vz*X-c+1] — a guaranteed
+    # bracket, so use a bracketing solve (robust for any release phase X0).
+    zof(X)       = (zc = vz*X - c; find_zero(z -> H(X, z) - c, (zc - 2.0, zc + 1.001)))
+    integrand(X) = 1 + 1/Xd(X, zof(X))                     # 1 + 1/f(X)
+
+    # f → −1 and the integrand's envelope ~ |A| e^{vz·X − c} decays as X → −∞;
+    # integrate to where that envelope drops below atol.
+    Xfar = min((c + log(atol) - log(abs(A))) / vz, X0 - 1.0)
+    return quadgk(integrand, X0, Xfar; rtol=rtol, atol=atol)[1]
+end
+
+"""
+    final_advection_distance_mr(p::Params; X0=0.0, z0=0.0, T=30/p.vz,
+                                reltol=1e-10, abstol=1e-12) -> Float64
+
+Same quantity as [`final_advection_distance`](@ref) but for the **full Maxey–Riley**
+system ([`maxey_riley!`](@ref)) instead of the slow-manifold reconstruction: integrate
+the particle ODE until it has settled (`z ≈ -30`) and return the net horizontal
+displacement `x(T) − X0`. Released ON the slow manifold at `(X0, z0)`
+(`v = A·E₀ − i·vz`, `A = amplitude(p)`) so there is no from-rest transient.
+
+Uses the decoupled convention (`vz`, `St` independent), like everything else here.
+Compare `final_advection_distance_mr(p) − final_advection_distance_mr(p_{b=1})` against
+the slow-manifold correction to see how much of the O(St) effect the reduction captures.
+"""
+function final_advection_distance_mr(p::Params; X0=0.0, z0=0.0, T=nothing,
+                                     reltol=1e-10, abstol=1e-12)
+    vz = p.vz
+    vz > 0 || throw(ArgumentError("final_advection_distance_mr needs vz > 0"))
+    A  = amplitude(p)
+    E0 = exp(z0 + im*X0)
+    u0 = [X0, z0, real(A*E0), imag(A*E0) - vz]        # on-manifold release
+    Tset = T === nothing ? 30/vz : T                  # settle to z ≈ -30 (drift saturated)
+    sol = solve(ODEProblem(maxey_riley!, u0, (0.0, Tset), p),
+                abstol=abstol, reltol=reltol, save_everystep=false, maxiters=1e9)
+    return sol.u[end][1] - X0
+end
+
+"""
+    final_advection_distance_fs(p::Params; X0=0.0, z0=0.0, T=30/p.vz,
+                                reltol=1e-10, abstol=1e-12) -> Float64
+
+Final advection distance of the **fluid + settling** model ([`fluid_settling!`](@ref)) —
+a fluid element that also settles at `vz`. This is the exact **St = 0 (no-inertia)
+limit**, depending only on `eps` and `vz` (not `St` or `b`). Integrate `fluid_settling!`
+until settled and return the net horizontal displacement `x(T) − X0`.
+
+It coincides (to solver tolerance) with `final_advection_distance(p_{b=1})`: the reduced
+model's `b = 1` distance equals this because `fluid_settling!` exactly conserves the
+`A = ε` Hamiltonian; and the full-M–R `b = 1` particle equals it too. It is therefore the
+natural common baseline for the inertial correction of *either* description.
+"""
+function final_advection_distance_fs(p::Params; X0=0.0, z0=0.0, T=nothing,
+                                     reltol=1e-10, abstol=1e-12)
+    vz = p.vz
+    vz > 0 || throw(ArgumentError("final_advection_distance_fs needs vz > 0"))
+    Tset = T === nothing ? 30/vz : T
+    sol = solve(ODEProblem(fluid_settling!, [X0, z0], (0.0, Tset), p),
+                abstol=abstol, reltol=reltol, save_everystep=false, maxiters=1e9)
+    return sol.u[end][1] - X0
+end
+
+"""
+    period_averaged_start(p::Params; u0=[0,0,ε,0], t_scan=8π, dt=0.01,
+                          reltol=1e-10, abstol=1e-12) -> (; avgd_x0, avgd_z0, ntptimes)
+
+Phase-averaged "true" starting point of a full Maxey–Riley trajectory. Solve from `u0`,
+find the first two times the horizontal velocity `vₓ = w[3]` crosses zero from negative to
+positive (`ntptimes`, one oscillation period), and average the position over that period.
+This removes the arbitrary instantaneous release phase/transient. Follows the
+`just_plot_z_vs_t` construction in the 2026.03 `plot_asymptotics.jl`.
+"""
+# Average (x, z) of a dense solution over the first oscillation period, delimited by the
+# first two negative→positive crossings of the horizontal velocity `vx(t)`.
+function _avg_first_period(sol, vx; t_scan, dt)
+    ntp = Float64[]
+    tg  = dt:dt:t_scan
+    for i in 1:length(tg)-1
+        (vx(tg[i]) < 0 <= vx(tg[i+1])) || continue
+        push!(ntp, find_zero(vx, (tg[i], tg[i+1]), Bisection()))
+        length(ntp) == 2 && break
+    end
+    length(ntp) == 2 ||
+        error("_avg_first_period: found $(length(ntp)) neg→pos vₓ crossings in [0, $t_scan]")
+    ts = ntp[1]:dt:ntp[2]
+    return (; avgd_x0 = mean(sol(t)[1] for t in ts),
+              avgd_z0 = mean(sol(t)[2] for t in ts),
+              ntptimes = (ntp[1], ntp[2]))
+end
+
+function period_averaged_start(p::Params; dynamics=maxey_riley!, u0=nothing, t_scan=8pi,
+                               dt=0.01, reltol=1e-10, abstol=1e-12)
+    ic  = u0 === nothing ? [0.0, 0.0, p.eps, 0.0] : u0
+    sol = solve(ODEProblem(dynamics, ic, (0.0, t_scan), p),
+                abstol=abstol, reltol=reltol, dense=true, maxiters=1e9)
+    return _avg_first_period(sol, t -> sol(t)[3]; t_scan=t_scan, dt=dt)  # vₓ = w[3]
+end
+
+"""
+    final_advection_distance_mr_avgstart(p::Params; u0=[0,0,ε,0], T=30/vz,
+                                         reltol=1e-10, abstol=1e-12) -> Float64
+
+Final advection distance of the full Maxey–Riley particle measured from the phase-averaged
+"true" start ([`period_averaged_start`](@ref)) instead of the instantaneous release point:
+`x(T) − avgd_x0`. Averaging out the first-period oscillation removes the O(St) boundary
+offset, isolating the drift displacement.
+"""
+function final_advection_distance_mr_avgstart(p::Params; dynamics=maxey_riley!, u0=nothing,
+                                              T=nothing, reltol=1e-10, abstol=1e-12)
+    ic = u0 === nothing ? [0.0, 0.0, p.eps, 0.0] : u0
+    s  = period_averaged_start(p; dynamics=dynamics, u0=ic, reltol=reltol, abstol=abstol)
+    Tset = T === nothing ? 30/p.vz : T
+    sol = solve(ODEProblem(dynamics, ic, (0.0, Tset), p),
+                abstol=abstol, reltol=reltol, save_everystep=false, maxiters=1e9)
+    return sol.u[end][1] - s.avgd_x0
+end
+
+"""
+    final_advection_distance_fs_avgstart(p::Params; t_scan=8π, dt=0.01, T=30/vz,
+                                         reltol=1e-10, abstol=1e-12) -> Float64
+
+St = 0 limit of [`final_advection_distance_mr_avgstart`](@ref): the fluid+settling
+([`fluid_settling!`](@ref)) final advection distance measured from its own phase-averaged
+start (first period of horizontal velocity `vₓ = ε eᶻ cos(x − t)`). Depends only on `eps`
+and `vz`. This is the baseline the M–R averaged-start distance approaches as St → 0.
+"""
+function final_advection_distance_fs_avgstart(p::Params; t_scan=8pi, dt=0.01, T=nothing,
+                                              reltol=1e-10, abstol=1e-12)
+    eps = p.eps
+    sol = solve(ODEProblem(fluid_settling!, [0.0, 0.0], (0.0, t_scan), p),
+                abstol=abstol, reltol=reltol, dense=true, maxiters=1e9)
+    vx(t) = eps*exp(sol(t)[2])*cos(sol(t)[1] - t)
+    s = _avg_first_period(sol, vx; t_scan=t_scan, dt=dt)
+    Tset = T === nothing ? 30/p.vz : T
+    solE = solve(ODEProblem(fluid_settling!, [0.0, 0.0], (0.0, Tset), p),
+                 abstol=abstol, reltol=reltol, save_everystep=false, maxiters=1e9)
+    return solE.u[end][1] - s.avgd_x0
+end

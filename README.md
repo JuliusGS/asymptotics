@@ -53,5 +53,3 @@ Rebuild every figure at once — in a REPL, or as a fresh process:
 ```
 julia --project=. -e 'using MSA; make_all_figures()'
 ```
-
-See [TUTORIAL.md](TUTORIAL.md) for worked recipes.

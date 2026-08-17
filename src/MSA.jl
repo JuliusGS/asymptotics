@@ -56,5 +56,8 @@ export mr_fs_isobar_figure, compare_full_fs_ham, b3_contours, xz_contours,
        final_advection_avgstart_vs_st_figure, final_advection_avgstart_order_figure,
        final_advection_ddt_order_figure, make_figures_comp_final_dist,
        make_all_figures, figure_suffix
+export slaved_amplitude, xdot_slaved, hdot_drift, invert_isobar, slaved_isobar_xz,
+       slaved_flow, integrate_slaved
+export plot_slaved_isobar
 
 end # module
