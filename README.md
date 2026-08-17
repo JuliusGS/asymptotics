@@ -2,6 +2,7 @@
 
 Local Julia package for the multiple-scales / slow-manifold analysis of a settling,
 added-mass particle in a deep-water surface wave (the decoupled Maxey–Riley problem).
+Calculations with `sympy` in `calculating_asymp.{ipynb,html}`.
 
 ## Convention
 
