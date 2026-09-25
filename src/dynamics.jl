@@ -267,7 +267,8 @@ end
 
 """
     plot_slaved_isobar(p::Params; kwargs...) -> Plots.Plot
-Three panels: (1) physical `(x,z)` path, per-period reconstruction vs. slaved ODE truth;
+Three panels: (1) physical `(x,z)` path — per-period reconstruction vs. slaved ODE truth,
+the `B₁,₂=0` purely Hamiltonian isobar ([`recover_xzt`](@ref)), and full Maxey-Riley;
 (2) wave-frame `(X,z)` with H-isobars in grey and the path crossing them (the visual
 proof that `Ḣ ≠ 0`); (3) the label `c = H` climbing — the staircase is the per-period
 update, overlaid on `H` along the true path. Logs the final advection distance from both.
@@ -294,11 +295,15 @@ function plot_slaved_isobar(p::Params; X0=0.0, z0=0.0,
     println("Time to integrate the 2D system: $(t2-t1)")
     println("Time to integrate the iterative approximation: $(t1-t0)")
     println("Time to integrate the 4D system: $(t3-t2)")
+    # B₁,₂=0: the purely Hamiltonian flow (no slaved drift), reconstructed from one isobar
+    ham = recover_xzt(p; X0=X0, z0=z0, Xspan=X0 - minimum(rec.X), N=4000)
+
     p1 = plot(gt.x, gt.z; label="slaved ODE", lw=2, color=:black,
               xlabel="x", ylabel="z", title="trajectory")
     plot!(p1, rec.x, rec.z; label="per-period isobar", lw=2, ls=:dash, color=:crimson)
+    plot!(p1, ham.x, ham.z; label="B₁,₂=0 (purely Hamiltonian)", lw=2, ls=:dot, color=:royalblue)
     plot!(p1, [mr(s)[1] for s in mr.t], [mr(s)[2] for s in mr.t],
-          label="Maxey-Riley (released on manifold)", lw=3, color=:orange, alpha=0.6)
+          label="Maxey-Riley (released on manifold)", lw=2, color=:black, alpha=0.6)
 
     Xg = range(minimum(rec.X), maximum(rec.X); length=220)
     zg = range(minimum(rec.z) - 0.2, 0.2; length=220)
@@ -311,7 +316,7 @@ function plot_slaved_isobar(p::Params; X0=0.0, z0=0.0,
     plot!(p3, gt.X, [H(X, z) for (X, z) in zip(gt.X, gt.z)];
           lw=2, ls=:dash, color=:black, label="H along slaved path")
 
-    @info "final advection distance" reconstruction=rec.x[end] truth=gt.x[end]
+    @info "final advection distance" reconstruction=rec.x[end] truth=gt.x[end] hamiltonian=ham.x[end]
 
     plt = plot(p1, p2, p3; layout=(1, 3), size=(1350, 420), legend=:best)
     savefig(plt, "figures/slaved.svg")
