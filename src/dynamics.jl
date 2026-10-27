@@ -278,7 +278,6 @@ function plot_slaved_isobar(p::Params; X0=0.0, z0=0.0,
     H   = hamiltonian(p)
     A = amplitude(p)
     T = 5/p.vz
-
     # full Maxey-Riley, released exactly on the slow manifold: v = A·E - i·vz at (X0,z0)
     E0 = exp(z0 + im*X0)
     u0 = [X0, z0, real(A*E0), imag(A*E0) - p.vz]
@@ -297,28 +296,84 @@ function plot_slaved_isobar(p::Params; X0=0.0, z0=0.0,
     println("Time to integrate the 4D system: $(t3-t2)")
     # B₁,₂=0: the purely Hamiltonian flow (no slaved drift), reconstructed from one isobar
     ham = recover_xzt(p; X0=X0, z0=z0, Xspan=X0 - minimum(rec.X), N=4000)
-
     p1 = plot(gt.x, gt.z; label="slaved ODE", lw=2, color=:black,
               xlabel="x", ylabel="z", title="trajectory")
     plot!(p1, rec.x, rec.z; label="per-period isobar", lw=2, ls=:dash, color=:crimson)
     plot!(p1, ham.x, ham.z; label="B₁,₂=0 (purely Hamiltonian)", lw=2, ls=:dot, color=:royalblue)
     plot!(p1, [mr(s)[1] for s in mr.t], [mr(s)[2] for s in mr.t],
           label="Maxey-Riley (released on manifold)", lw=2, color=:black, alpha=0.6)
-
     Xg = range(minimum(rec.X), maximum(rec.X); length=220)
     zg = range(minimum(rec.z) - 0.2, 0.2; length=220)
     p2 = contour(Xg, zg, (X, z) -> H(X, z); levels=25, color=:grays, colorbar=false,
                  xlabel="X = x - t", ylabel="z", title="isobars (grey) & path")
     plot!(p2, rec.X, rec.z; lw=2, color=:crimson, label="path (??? looks like there is a mistake)")
-
     p3 = plot(rec.X, rec.c; lw=2, color=:crimson, label="c (per-period update)",
               xlabel="X = x - t", ylabel="H", title="label drift  ∮ Ḣ/Ẋ dX ≠ 0")
     plot!(p3, gt.X, [H(X, z) for (X, z) in zip(gt.X, gt.z)];
           lw=2, ls=:dash, color=:black, label="H along slaved path")
-
     @info "final advection distance" reconstruction=rec.x[end] truth=gt.x[end] hamiltonian=ham.x[end]
-
     plt = plot(p1, p2, p3; layout=(1, 3), size=(1350, 420), legend=:best)
     savefig(plt, "figures/slaved.svg")
     return plt
+end
+
+function plot_slaved_isobar(p::Params; X0=0.0, z0=0.0,
+                            nperiods=200, nquad=200, zmin=-6.0)
+    H   = hamiltonian(p)
+    A = amplitude(p)
+    T = 5/p.vz
+    E0 = exp(z0 + im*X0)
+    u0 = [X0, z0, real(A*E0), imag(A*E0) - p.vz]
+    rec = slaved_isobar_xz(p; X0=X0, z0=z0, nperiods=nperiods, nquad=nquad, zmin=zmin)
+    mr = solve(ODEProblem(maxey_riley!, u0, (0.0, T), p),
+               abstol=1e-10, reltol=1e-10, dtmax=0.01, maxiters=1e9)
+    av = _avg_first_period(mr, t->mr(t)[3], t_scan=6pi,dt= .01)
+    u0mod = [av[1],av[2]]
+    asymp = solve(ODEProblem(wave_averaged_drift!, u0mod, (0.0,T), p),
+                  abstol = 1e-10, reltol=1e-10, dtmax = .01, maxiters=1e9)
+    # plot(rec.x, rec.z; label="per-period isobar", lw=2, ls=:dash, color=:crimson)
+    # savefig("figures/endpoint_comp.svg")
+    # println("Endpoint Asymptotics
+    println("Endpoint Hamiltonian Update = $(last(rec.x))")
+    println("Endpoint MR = $(last(mr.u)[1])")
+    println("Endpoint Asymp = $(last(asymp.u)[1])")
+    # println("Endpoint = $(end(rec.t))")
+    return(rec, mr, asymp)
+end
+
+function final_advection_vs_st_updating_scheme_figure(; St_lo=0.01, St_hi=3.0, n=20, eps=0.33, b=0.5, vz=0.05,
+                                      outdir=DEFAULT_FIGDIR)
+    Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
+    res = [plot_slaved_isobar(Params(St=St, eps=eps, b=b,   vz=vz)) for St in Sts]
+    d_hamil = [last(res[i][1].x) for i in 1:length(res)]
+    d_maxrey = [last(res[i][2].u)[1] for i in 1:length(res)]
+    d_asymp = [last(res[i][3].u)[1] for i in 1:length(res)]
+    plot(Sts, d_hamil; xscale=:log10, lw=2.5, color=:blue, label="Hamiltonian",
+         xlabel=L"\mathrm{St}", ylabel="final adv dist",
+         title="ε=$eps, b=$b, vz=$vz", legend=:bottomleft)
+    plot!(Sts, d_maxrey; lw=2, ls=:dash, color=:black, label="M-R")
+    plot!(Sts, d_asymp; lw=2, ls=:dot, color=:red, label="asymptotics")
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_vs_St_ham_updating_scheme_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    return Sts, d
+end
+function final_advection_vs_eps_updating_scheme_figure(; eps_lo=0.01, eps_hi=1.0, n=20, St=0.33, b=0.5, vz=0.05,
+                                      outdir=DEFAULT_FIGDIR)
+    epss = 10 .^ range(log10(eps_lo), log10(eps_hi), length=n)
+    res = [plot_slaved_isobar(Params(St=St, eps=eps, b=b,   vz=vz)) for eps in epss]
+    d_hamil = [last(res[i][1].x) for i in 1:length(res)]
+    d_maxrey = [last(res[i][2].u)[1] for i in 1:length(res)]
+    d_asymp = [last(res[i][3].u)[1] for i in 1:length(res)]
+    plot(epss, d_hamil; xscale=:log10, lw=2.5, color=:blue, label="Hamiltonian",
+         xlabel=L"\epsilon}", ylabel="final adv dist",
+         title="St=$St, b=$b, vz=$vz", legend=:bottomleft)
+    plot!(epss, d_maxrey; lw=2, ls=:dash, color=:black, label="M-R")
+    plot!(epss, d_asymp; lw=2, ls=:dot, color=:red, label="asymptotics")
+    mkpath(outdir)
+    fn = joinpath(outdir, "final_advection_vs_eps_ham_updating_scheme_St$(St)_b$(b)_vz$(round(vz, digits=4)).svg")
+    savefig(fn)
+    println("saved ", fn)
+    # return epsss, d
 end

@@ -16,27 +16,25 @@ rest, full Maxey-Riley from fluid velocity, and fluid+settling. Saves an SVG int
 `outdir` named with all of `p`'s parameters.
 """
 function mr_fs_isobar_figure(p::Params; N=3000, tend=nothing, prefix="mr_fs_isobar",
-                             outdir=DEFAULT_FIGDIR)
+                             outdir=DEFAULT_FIGDIR, showfluidandsettling=true)
     T = tend === nothing ? 5/p.vz : tend
-
     sol4(u0) = solve(ODEProblem(maxey_riley!, u0, (0.0, T), p),
                      abstol=1e-9, reltol=1e-9, saveat=0.05, dense=false, maxiters=1e8)
     mr_rest  = sol4([0.0, 0.0, 0.0, 0.0])       # M-R from rest
     mr_fluid = sol4([0.0, 0.0, p.eps, 0.0])     # M-R at fluid velocity (ε u at the origin)
     fs = solve(ODEProblem(fluid_settling!, [0.0, 0.0], (0.0, T), p),
                abstol=1e-9, reltol=1e-9, saveat=0.05, dense=false)
-
     rec = recover_xzt(p; X0=0.0, z0=0.0, Xspan=T, N=N)   # isobar -> (x, z)
-
     plt = plot(rec.x, rec.z, label="isobar (simplified Hamiltonian)", lw=2.5, color=:blue,
                xlabel="x", ylabel="z", size=(1000, 650), legend=:bottomright)
     plot!(plt, [u[1] for u in mr_rest.u],  [u[2] for u in mr_rest.u],
           label="M-R (from rest)", lw=2, color=:red)
     plot!(plt, [u[1] for u in mr_fluid.u], [u[2] for u in mr_fluid.u],
           label="M-R (from fluid velocity)", lw=2, color=:seagreen)
-    plot!(plt, [u[1] for u in fs.u], [u[2] for u in fs.u],
-          label="fluid + settling", lw=2, ls=:dash, color=:purple)
-
+    if showfluidandsettling
+        plot!(plt, [u[1] for u in fs.u], [u[2] for u in fs.u],
+              label="fluid + settling", lw=2, ls=:dash, color=:purple)
+    end
     mkpath(outdir)
     fn = joinpath(outdir, "$(prefix)_$(figure_suffix(p)).svg")
     savefig(plt, fn)
@@ -51,29 +49,26 @@ Full Maxey-Riley (released ON the slow manifold) vs. the isobar reconstruction a
 fluid+settling. All three use a single, consistent `vz`, so isobar and full M-R agree
 to solver tolerance (unlike the old `code/fixed_xzt.jl`, which mixed conventions).
 """
-function compare_full_fs_ham(p::Params; X0=0.0, z0=0.0, N=5000, outdir=DEFAULT_FIGDIR)
+function compare_full_fs_ham(p::Params; X0=0.0, z0=0.0, N=5000, outdir=DEFAULT_FIGDIR, showfluidandsettling=true)
     A = amplitude(p)
     T = 5/p.vz
-
     # full Maxey-Riley, released exactly on the slow manifold: v = A·E - i·vz at (X0,z0)
     E0 = exp(z0 + im*X0)
     u0 = [X0, z0, real(A*E0), imag(A*E0) - p.vz]
     mr = solve(ODEProblem(maxey_riley!, u0, (0.0, T), p),
                abstol=1e-10, reltol=1e-10, dtmax=0.01, maxiters=1e9)
-
     fs = solve(ODEProblem(fluid_settling!, [X0, z0], (0.0, T), p),
                abstol=1e-10, reltol=1e-10, dtmax=0.01)
-
     rec = recover_xzt(p; X0=X0, z0=z0, Xspan=T, N=N)
-
-    plt = plot(rec.x, rec.z, label="isobar reconstruction", lw=2, color=:blue,
+    plt = plot(rec.x, rec.z, label="Naïve Hamiltonian", lw=2, color=:blue,
                xlabel=L"x", ylabel=L"z", size=(1000, 640),
-               title="St=$(p.St), b=$(p.b), vz=$(p.vz)")
+               title = latexstring("\\mathrm{St}=$(p.St),\\; b=$(p.b),\\; v_S=$(p.vz)"))
     plot!(plt, [mr(s)[1] for s in mr.t], [mr(s)[2] for s in mr.t],
-          label="Maxey-Riley (released on manifold)", lw=3, color=:orange, alpha=0.6)
-    plot!(plt, [fs(s)[1] for s in fs.t], [fs(s)[2] for s in fs.t],
-          label="fluid + settling", lw=2, ls=:dash, color=:purple)
-
+          label="Maxey—Riley", lw=3, color=:orange, alpha=0.6)
+    if showfluidandsettling
+        plot!(plt, [fs(s)[1] for s in fs.t], [fs(s)[2] for s in fs.t],
+              label="fluid + settling", lw=2, ls=:dash, color=:purple)
+    end
     mkpath(outdir)
     fn = joinpath(outdir, "compare_full_fs_ham_$(figure_suffix(p)).svg")
     savefig(plt, fn)
@@ -226,12 +221,10 @@ function final_advection_vs_st_figure(; St_lo=0.01, St_hi=1.0, n=200, eps=0.33, 
     Sts = 10 .^ range(log10(St_lo), log10(St_hi), length=n)
     d      = [final_advection_distance(Params(St=St, eps=eps, b=b,   vz=vz)) for St in Sts]
     d_iner = [final_advection_distance(Params(St=St, eps=eps, b=1.0, vz=vz)) for St in Sts]
-
     plot(Sts, d; xscale=:log10, lw=2.5, color=:blue, label="b = $b",
          xlabel=L"\mathrm{St}", ylabel="final advection distance",
          title="ε=$eps, b=$b, vz=$vz", legend=:best)
     plot!(Sts, d_iner; lw=2, ls=:dash, color=:black, label="b = 1 (inertialess)")
-
     mkpath(outdir)
     fn = joinpath(outdir, "final_advection_vs_St_eps$(eps)_b$(b)_vz$(round(vz, digits=4)).svg")
     savefig(fn)
